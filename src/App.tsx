@@ -1026,7 +1026,7 @@ export default function App() {
                 boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
               }}
             >
-              {simStopped ? '▶️ Reprendre au point d'arrêt' : '🛑 Arrêt piste (test alerte silencieuse)'}
+              {simStopped ? "▶️ Reprendre au point d'arrêt" : "🛑 Arrêt piste (test alerte silencieuse)"}
             </button>
 
             {simStopped && (
