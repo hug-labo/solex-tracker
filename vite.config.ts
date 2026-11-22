@@ -1,10 +1,7 @@
-import type { CapacitorConfig } from '@capacitor/cli';
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
 
-const config: CapacitorConfig = {
-  appId: 'com.solex.tracking',
-  appName: 'Solex Tracking',
-  webDir: 'dist',
-};
-
-export default config;
+export default defineConfig({
+  plugins: [react()],
+});
 
