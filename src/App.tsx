@@ -67,7 +67,6 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
       [47.9470, 0.2035],
       [47.9485, 0.2005],
     ],
-    // 3 intermédiaires par défaut (libre d'en ajouter ou retirer)
     intermediates: [
       { id: 's1', name: 'S1', distance: 680, latLng: [47.9525, 0.2050] },
       { id: 's2', name: 'S2', distance: 1360, latLng: [47.9520, 0.2125] },
@@ -103,14 +102,16 @@ function projectPointOnTrack(
   clickLatLng: [number, number],
   trackPoints: [number, number][],
   cumDistances: number[]
-): { distance: number; latLng: [number, number] } {
+): { distance: number; latLng: [number, number]; segmentIndex: number; t: number } {
   if (trackPoints.length < 2) {
-    return { distance: 0, latLng: trackPoints[0] || clickLatLng };
+    return { distance: 0, latLng: trackPoints[0] || clickLatLng, segmentIndex: 0, t: 0 };
   }
 
   let bestDistToSegment = Infinity;
   let bestTrackDist = 0;
   let bestLatLng: [number, number] = trackPoints[0];
+  let bestSegIdx = 0;
+  let bestT = 0;
 
   const cLat = clickLatLng[0];
   const cLng = clickLatLng[1];
@@ -124,7 +125,6 @@ function projectPointOnTrack(
     const segLenMeters = calculateDistanceMeters(p1, p2);
     if (segLenMeters <= 0) continue;
 
-    // Projection planaire locale métrique
     const midLatRad = ((p1[0] + p2[0]) / 2) * (Math.PI / 180);
     const mPerDegLat = 111132;
     const mPerDegLng = 111412 * Math.cos(midLatRad);
@@ -148,19 +148,45 @@ function projectPointOnTrack(
       bestDistToSegment = distToClick;
       bestTrackDist = segStartDist + t * segLenMeters;
       bestLatLng = projLatLng;
+      bestSegIdx = i;
+      bestT = t;
     }
   }
 
-  return { distance: bestTrackDist, latLng: bestLatLng };
+  return { distance: bestTrackDist, latLng: bestLatLng, segmentIndex: bestSegIdx, t: bestT };
+}
+
+// Re-positionner la ligne de départ en faisant pivoter la boucle de la piste
+function reanchorTrackToStartPoint(
+  trackPoints: [number, number][],
+  clickPos: [number, number],
+  cumDistances: number[]
+): [number, number][] {
+  if (trackPoints.length < 3) return trackPoints;
+
+  const proj = projectPointOnTrack(clickPos, trackPoints, cumDistances);
+  const bestProj = proj.latLng;
+  const bestI = proj.segmentIndex;
+  const n = trackPoints.length;
+
+  const newPts: [number, number][] = [bestProj];
+  for (let offset = 1; offset <= n; offset++) {
+    const idx = (bestI + offset) % n;
+    if (calculateDistanceMeters(newPts[newPts.length - 1], trackPoints[idx]) > 4) {
+      newPts.push(trackPoints[idx]);
+    }
+  }
+  return newPts;
 }
 
 export default function App() {
   // Liste des circuits avec support de localStorage
   const [circuits, setCircuits] = useState<SavedCircuit[]>(() => {
     try {
-      const saved = localStorage.getItem('solex_circuits_v3');
+      const saved = localStorage.getItem('solex_circuits_v4');
       if (saved) return JSON.parse(saved);
-      // Migration v2 si présente
+      const savedV3 = localStorage.getItem('solex_circuits_v3');
+      if (savedV3) return JSON.parse(savedV3);
       const savedV2 = localStorage.getItem('solex_circuits_v2');
       if (savedV2) {
         const parsed = JSON.parse(savedV2);
@@ -184,13 +210,15 @@ export default function App() {
     return circuits.find((c) => c.id === selectedCircuitId) || circuits[0] || DEFAULT_CIRCUITS[0];
   }, [circuits, selectedCircuitId]);
 
-  // Mode création de nouveau circuit
+  // Mode création de nouveau circuit (tracé)
   const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
   const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
 
-  // Mode placement des balises intermédiaires
-  const [isPlacingIntermediates, setIsPlacingIntermediates] = useState<boolean>(false);
+  // Mode placement des balises et ligne de départ
+  const [isPlacingMenuOpen, setIsPlacingMenuOpen] = useState<boolean>(false);
+  const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate'>('none');
+  const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
 
   // Recherche de lieu
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -225,6 +253,14 @@ export default function App() {
   const stopDurationRef = useRef<number>(0);
   const recordedSplitsThisLapRef = useRef<(number | null)[]>([]);
 
+  // Notification temporaire
+  const showToast = (msg: string) => {
+    setNotificationMsg(msg);
+    setTimeout(() => {
+      setNotificationMsg(null);
+    }, 4000);
+  };
+
   // Calcul des métriques du circuit sélectionné
   const trackMetrics = useMemo(() => {
     const pts = currentCircuit.points;
@@ -249,7 +285,6 @@ export default function App() {
   const sortedIntermediates = useMemo(() => {
     const list = currentCircuit.intermediates ? [...currentCircuit.intermediates] : [];
     list.sort((a, b) => a.distance - b.distance);
-    // Renommer dynamiquement S1, S2, S3... dans l'ordre de la piste
     return list.map((item, idx) => ({
       ...item,
       name: `S${idx + 1}`,
@@ -304,7 +339,7 @@ export default function App() {
     };
   }, []);
 
-  // Affichage dynamique des balises : Départ / Arrivée et tous les Intermédiaires Sn
+  // Affichage dynamique des balises : Ligne de Départ / Arrivée et tous les Intermédiaires Sn
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -320,12 +355,12 @@ export default function App() {
 
     const markers: L.Marker[] = [];
 
-    // Ligne Départ / Arrivée (Point 0)
+    // Ligne Départ / Arrivée (Point 0 actuel)
     const startPos = pts[0];
     const startMarker = L.marker(startPos, {
       icon: createSectorIcon('🏁 DÉPART / ARRIVÉE', '#10b981', 0),
     }).addTo(map);
-    startMarker.bindPopup('<b>🏁 Ligne de Départ / Arrivée</b><br>Chronométrage à 00:00.0');
+    startMarker.bindPopup('<b>🏁 Ligne de Départ / Arrivée</b><br>Chronométrage à 00:00.0<br><small>Pour la déplacer, cliquez sur "🏁 Déplacer Départ" puis sur la piste.</small>');
     markers.push(startMarker);
 
     // Balises intermédiaires dynamiques S1, S2, ..., Sn
@@ -334,7 +369,7 @@ export default function App() {
       const marker = L.marker(pos, {
         icon: createSectorIcon(`🚩 ${inter.name}`, '#f59e0b', inter.distance),
       }).addTo(map);
-      marker.bindPopup(`<b>Balise ${inter.name}</b><br>Distance départ : ${Math.round(inter.distance)} m<br><small>Temps mesuré par rapport au départ</small>`);
+      marker.bindPopup(`<b>Balise ${inter.name}</b><br>Distance départ : ${Math.round(inter.distance)} m<br><small>Temps mesuré par rapport à la ligne de départ</small>`);
       markers.push(marker);
     });
 
@@ -346,7 +381,7 @@ export default function App() {
     }
   }, [currentCircuit, isEditingTrack, sortedIntermediates]);
 
-  // Clic sur la carte : gestion soit du tracé de circuit, soit du placement des balises
+  // Clic sur la carte : gestion tracé de circuit, placement ligne de départ, ou balise intermédiaire
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -354,17 +389,58 @@ export default function App() {
     const handleClick = (e: L.LeafletMouseEvent) => {
       const clickPos: [number, number] = [e.latlng.lat, e.latlng.lng];
 
-      // Cas 1 : En train de tracer un circuit
+      // Cas 1 : En train de tracer un nouveau circuit
       if (isEditingTrack) {
         setEditTrackPoints((prev) => [...prev, clickPos]);
         return;
       }
 
-      // Cas 2 : En mode placement d'un point intermédiaire
-      if (isPlacingIntermediates) {
+      // Cas 2 : Déplacer la ligne de Départ / Arrivée
+      if (placementMode === 'startLine') {
+        const newTrackPoints = reanchorTrackToStartPoint(currentCircuit.points, clickPos, trackMetrics.cumDistances);
+
+        // Recalculer les distances des balises existantes par rapport au nouveau départ
+        const newCum: number[] = [0];
+        let newTotal = 0;
+        for (let i = 0; i < newTrackPoints.length; i++) {
+          const nextIdx = (i + 1) % newTrackPoints.length;
+          const d = calculateDistanceMeters(newTrackPoints[i], newTrackPoints[nextIdx]);
+          newTotal += d;
+          newCum.push(newTotal);
+        }
+
+        const updatedIntermediates = (currentCircuit.intermediates || []).map((inter) => {
+          const p = projectPointOnTrack(inter.latLng, newTrackPoints, newCum);
+          return {
+            ...inter,
+            distance: p.distance,
+            latLng: p.latLng,
+          };
+        });
+
+        const updatedCircuit: SavedCircuit = {
+          ...currentCircuit,
+          points: newTrackPoints,
+          intermediates: updatedIntermediates,
+        };
+
+        const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
+        setCircuits(updatedCircuits);
+        localStorage.setItem('solex_circuits_v4', JSON.stringify(updatedCircuits));
+        setPlacementMode('none');
+        showToast('🏁 Ligne de Départ / Arrivée repositionnée avec succès !');
+        // Réinitialiser la simulation sur le nouveau départ
+        setLapHistory([]);
+        setCurrentLap(1);
+        setBestLapTime(null);
+        distanceCoveredInLapRef.current = 0;
+        return;
+      }
+
+      // Cas 3 : Ajouter une balise intermédiaire
+      if (placementMode === 'intermediate') {
         const { distance, latLng } = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
-        
-        // Empêcher d'ajouter un point trop proche du départ (ex < 20m ou > total - 20m)
+
         if (distance < 20 || distance > trackMetrics.totalDistance - 20) {
           alert('Le point intermédiaire est trop proche de la ligne de départ/arrivée.');
           return;
@@ -378,11 +454,9 @@ export default function App() {
         };
 
         const updatedList = [...(currentCircuit.intermediates || []), newInter];
-        const updatedCircuit = { ...currentCircuit, intermediates: updatedList };
-
-        const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
-        setCircuits(updatedCircuits);
-        localStorage.setItem('solex_circuits_v3', JSON.stringify(updatedCircuits));
+        saveIntermediates(updatedList);
+        showToast(`🚩 Balise intermédiaire ajoutée à ${Math.round(distance)}m du départ !`);
+        return;
       }
     };
 
@@ -390,7 +464,7 @@ export default function App() {
     return () => {
       map.off('click', handleClick);
     };
-  }, [isEditingTrack, isPlacingIntermediates, currentCircuit, trackMetrics, sortedIntermediates, circuits]);
+  }, [isEditingTrack, placementMode, currentCircuit, trackMetrics, sortedIntermediates, circuits]);
 
   // Synchronisation visuelle du tracé pendant l'édition
   useEffect(() => {
@@ -416,7 +490,7 @@ export default function App() {
   };
 
   // BOUCLE DE SIMULATION HAUTE PRÉCISION (10 Hz = 100ms)
-  // Calcul temps au tour & temps intermédiaires par rapport au départ
+  // Calcul temps au tour & temps intermédiaires cumulés depuis le départ
   useEffect(() => {
     if (isEditingTrack || currentCircuit.points.length < 2) return;
 
@@ -539,13 +613,14 @@ export default function App() {
     }
 
     saveIntermediates(newInters);
+    showToast(`⚡ ${count} balise(s) répartie(s) équitablement le long du tracé.`);
   };
 
   const saveIntermediates = (newList: IntermediatePoint[]) => {
     const updatedCircuit = { ...currentCircuit, intermediates: newList };
     const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
     setCircuits(updatedCircuits);
-    localStorage.setItem('solex_circuits_v3', JSON.stringify(updatedCircuits));
+    localStorage.setItem('solex_circuits_v4', JSON.stringify(updatedCircuits));
     setLapHistory([]);
     setCurrentLap(1);
     setBestLapTime(null);
@@ -569,7 +644,7 @@ export default function App() {
           mapRef.current.flyTo([lat, lon], 16, { duration: 1.5 });
         }
       } else {
-        alert('Lieu introuvable. Précisez la ville ou la région.');
+        alert('Lieu introuvable. Précisez la commune ou le lieu-dit.');
       }
     } catch (err) {
       alert('Erreur lors de la recherche.');
@@ -593,11 +668,10 @@ export default function App() {
   // Enregistrer le nouveau circuit tracé
   const handleSaveCircuit = () => {
     if (editTrackPoints.length < 3) {
-      alert('Veuillez cliquer au moins 3 points sur la carte pour former une piste.');
+      alert('Veuillez cliquer au moins 3 points sur la carte pour former une boucle fermée.');
       return;
     }
 
-    // Répartir 2 intermédiaires par défaut sur le nouveau circuit
     const newCircuit: SavedCircuit = {
       id: `circuit-${Date.now()}`,
       name: newCircuitName.trim() || `Circuit ${circuits.length + 1}`,
@@ -607,13 +681,14 @@ export default function App() {
 
     const updated = [...circuits, newCircuit];
     setCircuits(updated);
-    localStorage.setItem('solex_circuits_v3', JSON.stringify(updated));
+    localStorage.setItem('solex_circuits_v4', JSON.stringify(updated));
     setSelectedCircuitId(newCircuit.id);
     setIsEditingTrack(false);
     setEditTrackPoints([]);
     setLapHistory([]);
     setCurrentLap(1);
     setBestLapTime(null);
+    showToast('Circuit enregistré ! Le premier point tracé est votre ligne de départ.');
   };
 
   const formatSec = (sec: number | null) => {
@@ -633,6 +708,13 @@ export default function App() {
         </div>
       )}
 
+      {/* Notification Toast */}
+      {notificationMsg && (
+        <div style={{ backgroundColor: '#059669', color: 'white', padding: '10px 16px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.4)' }}>
+          {notificationMsg}
+        </div>
+      )}
+
       {/* Barre supérieure : Sélecteur de circuit, Recherche, Actions */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1f2937', padding: '10px', borderRadius: '8px' }}>
         {/* Choix du circuit */}
@@ -645,7 +727,8 @@ export default function App() {
               setLapHistory([]);
               setCurrentLap(1);
               setBestLapTime(null);
-              setIsPlacingIntermediates(false);
+              setPlacementMode('none');
+              setIsPlacingMenuOpen(false);
             }}
             disabled={isEditingTrack}
             style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '6px', fontSize: '13px' }}
@@ -660,7 +743,7 @@ export default function App() {
 
         {/* Longueur du circuit & nombre de balises */}
         <div style={{ background: '#374151', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', color: '#93c5fd' }}>
-          📏 <strong>{Math.round(trackMetrics.totalDistance)} m</strong> | 🚩 <strong>{sortedIntermediates.length} balise{sortedIntermediates.length > 1 ? 's' : ''}</strong>
+          📏 <strong>{Math.round(trackMetrics.totalDistance)} m</strong> | 🏁 <strong>Départ actif</strong> | 🚩 <strong>{sortedIntermediates.length} balise{sortedIntermediates.length > 1 ? 's' : ''}</strong>
         </div>
 
         {/* Recherche de lieu */}
@@ -685,24 +768,25 @@ export default function App() {
           🗺️ Vue Circuit
         </button>
 
-        {/* Bouton Gérer les intermédiaires */}
+        {/* Bouton Gérer les balises et la ligne de départ */}
         <button
           onClick={() => {
-            setIsPlacingIntermediates(!isPlacingIntermediates);
+            setIsPlacingMenuOpen(!isPlacingMenuOpen);
             setIsEditingTrack(false);
+            if (isPlacingMenuOpen) setPlacementMode('none');
           }}
           style={{
             padding: '6px 12px',
-            background: isPlacingIntermediates ? '#f59e0b' : '#374151',
-            color: isPlacingIntermediates ? '#111827' : 'white',
-            border: '1px solid #f59e0b',
+            background: isPlacingMenuOpen ? '#10b981' : '#374151',
+            color: 'white',
+            border: '1px solid #10b981',
             borderRadius: '6px',
             cursor: 'pointer',
             fontWeight: 'bold',
             fontSize: '13px',
           }}
         >
-          🚩 {isPlacingIntermediates ? 'Fermer Balises' : 'Placer Balises'}
+          🏁 {isPlacingMenuOpen ? 'Fermer Éditeur Lignes' : 'Placer Départ & Balises'}
         </button>
 
         {/* Bouton Créer circuit */}
@@ -710,7 +794,8 @@ export default function App() {
           <button
             onClick={() => {
               setIsEditingTrack(true);
-              setIsPlacingIntermediates(false);
+              setIsPlacingMenuOpen(false);
+              setPlacementMode('none');
               setEditTrackPoints([]);
             }}
             style={{ padding: '6px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
@@ -736,26 +821,62 @@ export default function App() {
         )}
       </div>
 
-      {/* Barre d'outils dédiée pour placer les balises intermédiaires */}
-      {isPlacingIntermediates && (
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#2d3748', border: '1px solid #f59e0b', padding: '10px', borderRadius: '8px' }}>
-          <div style={{ fontWeight: 'bold', color: '#fbbf24', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <span>👉 Cliquez sur la piste pour ajouter une balise intermédiaire (S1, S2, ...)</span>
+      {/* Barre d'outils dédiée pour placer la ligne de départ et les balises intermédiaires */}
+      {isPlacingMenuOpen && (
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', background: '#1f2937', border: '2px solid #10b981', padding: '10px 14px', borderRadius: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#a7f3d0' }}>Action au clic :</span>
+
+            {/* Bouton pour déplacer la ligne de départ */}
+            <button
+              onClick={() => setPlacementMode(placementMode === 'startLine' ? 'none' : 'startLine')}
+              style={{
+                padding: '6px 12px',
+                background: placementMode === 'startLine' ? '#10b981' : '#374151',
+                color: 'white',
+                border: '1px solid #10b981',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontSize: '12px',
+                boxShadow: placementMode === 'startLine' ? '0 0 10px rgba(16, 185, 129, 0.6)' : 'none',
+              }}
+            >
+              🏁 {placementMode === 'startLine' ? '👉 Cliquez sur la piste pour fixer le Départ' : 'Déplacer Ligne Départ/Arrivée'}
+            </button>
+
+            {/* Bouton pour ajouter une balise intermédiaire */}
+            <button
+              onClick={() => setPlacementMode(placementMode === 'intermediate' ? 'none' : 'intermediate')}
+              style={{
+                padding: '6px 12px',
+                background: placementMode === 'intermediate' ? '#f59e0b' : '#374151',
+                color: placementMode === 'intermediate' ? '#111827' : 'white',
+                border: '1px solid #f59e0b',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: 'bold',
+                fontSize: '12px',
+                boxShadow: placementMode === 'intermediate' ? '0 0 10px rgba(245, 158, 11, 0.6)' : 'none',
+              }}
+            >
+              🚩 {placementMode === 'intermediate' ? '👉 Cliquez sur la piste pour ajouter une balise' : '+ Ajouter Balise (S1, S2...)'}
+            </button>
           </div>
 
           <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap', alignItems: 'center' }}>
             <span style={{ fontSize: '12px', color: '#9ca3af' }}>Répartition auto :</span>
-            <button onClick={() => handleAutoDistribute(1)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
-              1 balise (2 sect.)
+            <button onClick={() => handleAutoDistribute(1)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              1 balise
             </button>
-            <button onClick={() => handleAutoDistribute(2)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
-              2 balises (3 sect.)
+            <button onClick={() => handleAutoDistribute(2)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              2 balises
             </button>
-            <button onClick={() => handleAutoDistribute(3)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
-              3 balises (4 sect.)
+            <button onClick={() => handleAutoDistribute(3)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              3 balises
             </button>
-            <button onClick={() => handleAutoDistribute(4)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
-              4 balises (5 sect.)
+            <button onClick={() => handleAutoDistribute(4)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              4 balises
             </button>
 
             <button onClick={handleRemoveLastIntermediate} style={{ padding: '4px 8px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
