@@ -13,42 +13,49 @@ L.Icon.Default.mergeOptions({
 // Icône personnalisée Solex
 const solexIcon = L.divIcon({
   className: 'custom-solex-marker',
-  html: '<div style="background-color:#3b82f6;color:white;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:3px solid white;box-shadow:0 0 10px rgba(0,0,0,0.5);">🛵</div>',
-  iconSize: [32, 32],
-  iconAnchor: [16, 16],
+  html: '<div style="background-color:#3b82f6;color:white;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:3px solid white;box-shadow:0 0 10px rgba(0,0,0,0.5);transform:translate(-2px,-2px);">🛵</div>',
+  iconSize: [34, 34],
+  iconAnchor: [17, 17],
 });
 
-// Icône pour les balises de secteurs
-const createSectorIcon = (label: string, bg: string) =>
+// Icône pour les balises de secteurs et départ
+const createSectorIcon = (label: string, bg: string, distanceM?: number) =>
   L.divIcon({
     className: 'custom-sector-marker',
-    html: `<div style="background-color:${bg};color:white;padding:2px 6px;border-radius:4px;font-weight:bold;font-size:12px;border:2px solid white;box-shadow:0 0 6px rgba(0,0,0,0.4);white-space:nowrap;">${label}</div>`,
-    iconSize: [40, 24],
-    iconAnchor: [20, 12],
+    html: `<div style="background-color:${bg};color:white;padding:3px 8px;border-radius:6px;font-weight:bold;font-size:11px;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.4);white-space:nowrap;display:flex;flex-direction:column;align-items:center;line-height:1.2;">
+      <span>${label}</span>
+      ${distanceM !== undefined ? `<span style="font-size:9px;opacity:0.9;font-weight:normal;">${Math.round(distanceM)}m</span>` : ''}
+    </div>`,
+    iconSize: [60, 30],
+    iconAnchor: [30, 15],
   });
 
-interface LapRecord {
+export interface IntermediatePoint {
+  id: string;
+  name: string; // Ex: "S1", "S2", etc.
+  distance: number; // Distance en mètres depuis la ligne de départ le long de la piste
+  latLng: [number, number];
+}
+
+export interface LapRecord {
   lap: number;
-  s1: number;
-  s2: number;
-  s3: number;
-  s4: number;
-  s5: number;
+  intermediateTimes: (number | null)[]; // Temps de passage par rapport au départ (secondes)
   totalTime: number;
   avgSpeed: number;
 }
 
-interface SavedCircuit {
+export interface SavedCircuit {
   id: string;
   name: string;
   points: [number, number][];
+  intermediates?: IntermediatePoint[];
 }
 
-// Circuit par défaut réaliste (Le Mans Karting / Circuit d'endurance ~1.4 km)
+// Circuits par défaut avec points intermédiaires préconfigurés
 const DEFAULT_CIRCUITS: SavedCircuit[] = [
   {
     id: 'circuit-mans',
-    name: 'Circuit Endurance Le Mans (1.4 km)',
+    name: 'Circuit Endurance Le Mans (~2.7 km)',
     points: [
       [47.9500, 0.2000],
       [47.9515, 0.2030],
@@ -60,10 +67,16 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
       [47.9470, 0.2035],
       [47.9485, 0.2005],
     ],
+    // 3 intermédiaires par défaut (libre d'en ajouter ou retirer)
+    intermediates: [
+      { id: 's1', name: 'S1', distance: 680, latLng: [47.9525, 0.2050] },
+      { id: 's2', name: 'S2', distance: 1360, latLng: [47.9520, 0.2125] },
+      { id: 's3', name: 'S3', distance: 2040, latLng: [47.9472, 0.2095] },
+    ],
   },
   {
     id: 'circuit-nouziers',
-    name: 'Circuit Type Nouziers (3.2 km)',
+    name: 'Circuit Type Nouziers (~3.6 km)',
     points: [
       [46.4250, 1.9400],
       [46.4280, 1.9480],
@@ -73,6 +86,10 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
       [46.4180, 1.9480],
       [46.4200, 1.9410],
     ],
+    intermediates: [
+      { id: 's1', name: 'S1', distance: 1200, latLng: [46.4295, 1.9520] },
+      { id: 's2', name: 'S2', distance: 2400, latLng: [46.4245, 1.9575] },
+    ],
   },
 ];
 
@@ -81,22 +98,99 @@ function calculateDistanceMeters(p1: [number, number], p2: [number, number]): nu
   return L.latLng(p1[0], p1[1]).distanceTo(L.latLng(p2[0], p2[1]));
 }
 
+// Projeter un clic sur la piste pour trouver la position exacte et la distance depuis le départ
+function projectPointOnTrack(
+  clickLatLng: [number, number],
+  trackPoints: [number, number][],
+  cumDistances: number[]
+): { distance: number; latLng: [number, number] } {
+  if (trackPoints.length < 2) {
+    return { distance: 0, latLng: trackPoints[0] || clickLatLng };
+  }
+
+  let bestDistToSegment = Infinity;
+  let bestTrackDist = 0;
+  let bestLatLng: [number, number] = trackPoints[0];
+
+  const cLat = clickLatLng[0];
+  const cLng = clickLatLng[1];
+
+  for (let i = 0; i < trackPoints.length; i++) {
+    const nextIdx = (i + 1) % trackPoints.length;
+    const p1 = trackPoints[i];
+    const p2 = trackPoints[nextIdx];
+
+    const segStartDist = cumDistances[i];
+    const segLenMeters = calculateDistanceMeters(p1, p2);
+    if (segLenMeters <= 0) continue;
+
+    // Projection planaire locale métrique
+    const midLatRad = ((p1[0] + p2[0]) / 2) * (Math.PI / 180);
+    const mPerDegLat = 111132;
+    const mPerDegLng = 111412 * Math.cos(midLatRad);
+
+    const vx = (p2[1] - p1[1]) * mPerDegLng;
+    const vy = (p2[0] - p1[0]) * mPerDegLat;
+    const segLenSq = vx * vx + vy * vy;
+
+    const ux = (cLng - p1[1]) * mPerDegLng;
+    const uy = (cLat - p1[0]) * mPerDegLat;
+
+    let t = (ux * vx + uy * vy) / segLenSq;
+    t = Math.max(0, Math.min(1, t));
+
+    const projLat = p1[0] + t * (p2[0] - p1[0]);
+    const projLng = p1[1] + t * (p2[1] - p1[1]);
+    const projLatLng: [number, number] = [projLat, projLng];
+
+    const distToClick = calculateDistanceMeters(clickLatLng, projLatLng);
+    if (distToClick < bestDistToSegment) {
+      bestDistToSegment = distToClick;
+      bestTrackDist = segStartDist + t * segLenMeters;
+      bestLatLng = projLatLng;
+    }
+  }
+
+  return { distance: bestTrackDist, latLng: bestLatLng };
+}
+
 export default function App() {
-  // Liste des circuits
+  // Liste des circuits avec support de localStorage
   const [circuits, setCircuits] = useState<SavedCircuit[]>(() => {
-    const saved = localStorage.getItem('solex_circuits_v2');
-    return saved ? JSON.parse(saved) : DEFAULT_CIRCUITS;
+    try {
+      const saved = localStorage.getItem('solex_circuits_v3');
+      if (saved) return JSON.parse(saved);
+      // Migration v2 si présente
+      const savedV2 = localStorage.getItem('solex_circuits_v2');
+      if (savedV2) {
+        const parsed = JSON.parse(savedV2);
+        return parsed.map((c: any) => ({
+          ...c,
+          intermediates: c.intermediates || [
+            { id: 's1', name: 'S1', distance: 500, latLng: c.points[1] || c.points[0] },
+            { id: 's2', name: 'S2', distance: 1000, latLng: c.points[2] || c.points[0] },
+          ],
+        }));
+      }
+    } catch (e) {
+      console.error('Erreur lecture circuits', e);
+    }
+    return DEFAULT_CIRCUITS;
   });
+
   const [selectedCircuitId, setSelectedCircuitId] = useState<string>(circuits[0]?.id || 'circuit-mans');
 
   const currentCircuit = useMemo(() => {
     return circuits.find((c) => c.id === selectedCircuitId) || circuits[0] || DEFAULT_CIRCUITS[0];
   }, [circuits, selectedCircuitId]);
 
-  // Mode édition de circuit
-  const [isEditing, setIsEditing] = useState<boolean>(false);
+  // Mode création de nouveau circuit
+  const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
-  const [editPoints, setEditPoints] = useState<[number, number][]>([]);
+  const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
+
+  // Mode placement des balises intermédiaires
+  const [isPlacingIntermediates, setIsPlacingIntermediates] = useState<boolean>(false);
 
   // Recherche de lieu
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -104,17 +198,14 @@ export default function App() {
 
   // Données de télémétrie en direct
   const [speed, setSpeed] = useState<number>(0);
-  const [targetSpeed, setTargetSpeed] = useState<number>(80);
+  const [targetSpeed, setTargetSpeed] = useState<number>(85);
   const [currentLap, setCurrentLap] = useState<number>(1);
   const [currentLapTime, setCurrentLapTime] = useState<number>(0);
   const [lapHistory, setLapHistory] = useState<LapRecord[]>([]);
   const [bestLapTime, setBestLapTime] = useState<number | null>(null);
 
-  // Temps en direct du tour en cours pour les secteurs
-  const [liveS1, setLiveS1] = useState<number | null>(null);
-  const [liveS2, setLiveS2] = useState<number | null>(null);
-  const [liveS3, setLiveS3] = useState<number | null>(null);
-  const [liveS4, setLiveS4] = useState<number | null>(null);
+  // Temps intermédiaires EN COURS (par rapport à la ligne de départ)
+  const [liveSplitTimes, setLiveSplitTimes] = useState<(number | null)[]>([]);
 
   // Arrêt d'urgence et alerte
   const [simStopped, setSimStopped] = useState<boolean>(false);
@@ -127,18 +218,17 @@ export default function App() {
   const solexMarkerRef = useRef<L.Marker | null>(null);
   const sectorMarkersRef = useRef<L.Marker[]>([]);
 
-  // Références physiques pour la simulation précise
+  // Références physiques pour la simulation
   const distanceCoveredInLapRef = useRef<number>(0);
   const lapStartTimeRef = useRef<number>(Date.now());
   const lastTickTimeRef = useRef<number>(Date.now());
-  const currentSpeedRef = useRef<number>(80);
   const stopDurationRef = useRef<number>(0);
-  const sectorSplitsRef = useRef<{ s1: number; s2: number; s3: number; s4: number }>({ s1: 0, s2: 0, s3: 0, s4: 0 });
+  const recordedSplitsThisLapRef = useRef<(number | null)[]>([]);
 
   // Calcul des métriques du circuit sélectionné
   const trackMetrics = useMemo(() => {
     const pts = currentCircuit.points;
-    if (pts.length < 2) return { totalDistance: 1000, cumDistances: [0], s1Dist: 200, s2Dist: 400, s3Dist: 600, s4Dist: 800 };
+    if (pts.length < 2) return { totalDistance: 1000, cumDistances: [0] };
 
     const cum: number[] = [0];
     let total = 0;
@@ -152,12 +242,19 @@ export default function App() {
     return {
       totalDistance: total,
       cumDistances: cum,
-      s1Dist: total * 0.20,
-      s2Dist: total * 0.40,
-      s3Dist: total * 0.60,
-      s4Dist: total * 0.80,
     };
   }, [currentCircuit]);
+
+  // Points intermédiaires triés par distance depuis le départ
+  const sortedIntermediates = useMemo(() => {
+    const list = currentCircuit.intermediates ? [...currentCircuit.intermediates] : [];
+    list.sort((a, b) => a.distance - b.distance);
+    // Renommer dynamiquement S1, S2, S3... dans l'ordre de la piste
+    return list.map((item, idx) => ({
+      ...item,
+      name: `S${idx + 1}`,
+    }));
+  }, [currentCircuit.intermediates]);
 
   // Positionner le Solex sur le tracé en fonction de la distance parcourue
   const getPositionFromDistance = (dist: number): [number, number] => {
@@ -167,13 +264,11 @@ export default function App() {
     const total = trackMetrics.totalDistance;
     const normalizedDist = ((dist % total) + total) % total;
 
-    let segmentIndex = 0;
     for (let i = 0; i < pts.length; i++) {
       const nextIndex = (i + 1) % pts.length;
       const segDist = calculateDistanceMeters(pts[i], pts[nextIndex]);
       const segStart = trackMetrics.cumDistances[i];
       if (normalizedDist >= segStart && normalizedDist <= segStart + segDist) {
-        segmentIndex = i;
         const progress = segDist > 0 ? (normalizedDist - segStart) / segDist : 0;
         const lat = pts[i][0] + (pts[nextIndex][0] - pts[i][0]) * progress;
         const lng = pts[i][1] + (pts[nextIndex][1] - pts[i][1]) * progress;
@@ -195,9 +290,12 @@ export default function App() {
       maxZoom: 19,
     }).addTo(map);
 
-    polylineRef.current = L.polyline(currentCircuit.points, { color: '#3b82f6', weight: 5 }).addTo(map);
-    solexMarkerRef.current = L.marker(initialCenter, { icon: solexIcon }).addTo(map);
+    polylineRef.current = L.polyline([...currentCircuit.points, currentCircuit.points[0]], {
+      color: '#3b82f6',
+      weight: 5,
+    }).addTo(map);
 
+    solexMarkerRef.current = L.marker(initialCenter, { icon: solexIcon }).addTo(map);
     mapRef.current = map;
 
     return () => {
@@ -206,7 +304,7 @@ export default function App() {
     };
   }, []);
 
-  // Affichage des balises Départ/Arrivée, S1, S2, S3, S4
+  // Affichage dynamique des balises : Départ / Arrivée et tous les Intermédiaires Sn
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -215,28 +313,30 @@ export default function App() {
     sectorMarkersRef.current.forEach((m) => m.remove());
     sectorMarkersRef.current = [];
 
-    if (isEditing) return;
+    if (isEditingTrack) return;
 
     const pts = currentCircuit.points;
     if (pts.length < 2) return;
 
     const markers: L.Marker[] = [];
 
-    // Ligne Départ / Arrivée
+    // Ligne Départ / Arrivée (Point 0)
     const startPos = pts[0];
-    const startMarker = L.marker(startPos, { icon: createSectorIcon('🏁 DÉPART / ARRIVÉE', '#10b981') }).addTo(map);
+    const startMarker = L.marker(startPos, {
+      icon: createSectorIcon('🏁 DÉPART / ARRIVÉE', '#10b981', 0),
+    }).addTo(map);
+    startMarker.bindPopup('<b>🏁 Ligne de Départ / Arrivée</b><br>Chronométrage à 00:00.0');
     markers.push(startMarker);
 
-    // S1, S2, S3, S4
-    const s1Pos = getPositionFromDistance(trackMetrics.s1Dist);
-    const s2Pos = getPositionFromDistance(trackMetrics.s2Dist);
-    const s3Pos = getPositionFromDistance(trackMetrics.s3Dist);
-    const s4Pos = getPositionFromDistance(trackMetrics.s4Dist);
-
-    markers.push(L.marker(s1Pos, { icon: createSectorIcon('S1', '#f59e0b') }).addTo(map));
-    markers.push(L.marker(s2Pos, { icon: createSectorIcon('S2', '#f59e0b') }).addTo(map));
-    markers.push(L.marker(s3Pos, { icon: createSectorIcon('S3', '#f59e0b') }).addTo(map));
-    markers.push(L.marker(s4Pos, { icon: createSectorIcon('S4', '#f59e0b') }).addTo(map));
+    // Balises intermédiaires dynamiques S1, S2, ..., Sn
+    sortedIntermediates.forEach((inter) => {
+      const pos = inter.latLng || getPositionFromDistance(inter.distance);
+      const marker = L.marker(pos, {
+        icon: createSectorIcon(`🚩 ${inter.name}`, '#f59e0b', inter.distance),
+      }).addTo(map);
+      marker.bindPopup(`<b>Balise ${inter.name}</b><br>Distance départ : ${Math.round(inter.distance)} m<br><small>Temps mesuré par rapport au départ</small>`);
+      markers.push(marker);
+    });
 
     sectorMarkersRef.current = markers;
 
@@ -244,29 +344,59 @@ export default function App() {
     if (polylineRef.current) {
       polylineRef.current.setLatLngs([...pts, pts[0]]);
     }
-  }, [currentCircuit, isEditing, trackMetrics]);
+  }, [currentCircuit, isEditingTrack, sortedIntermediates]);
 
-  // Écoute des clics en mode création de circuit
+  // Clic sur la carte : gestion soit du tracé de circuit, soit du placement des balises
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
     const handleClick = (e: L.LeafletMouseEvent) => {
-      if (!isEditing) return;
-      setEditPoints((prev) => [...prev, [e.latlng.lat, e.latlng.lng]]);
+      const clickPos: [number, number] = [e.latlng.lat, e.latlng.lng];
+
+      // Cas 1 : En train de tracer un circuit
+      if (isEditingTrack) {
+        setEditTrackPoints((prev) => [...prev, clickPos]);
+        return;
+      }
+
+      // Cas 2 : En mode placement d'un point intermédiaire
+      if (isPlacingIntermediates) {
+        const { distance, latLng } = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
+        
+        // Empêcher d'ajouter un point trop proche du départ (ex < 20m ou > total - 20m)
+        if (distance < 20 || distance > trackMetrics.totalDistance - 20) {
+          alert('Le point intermédiaire est trop proche de la ligne de départ/arrivée.');
+          return;
+        }
+
+        const newInter: IntermediatePoint = {
+          id: `inter-${Date.now()}`,
+          name: `S${sortedIntermediates.length + 1}`,
+          distance: distance,
+          latLng: latLng,
+        };
+
+        const updatedList = [...(currentCircuit.intermediates || []), newInter];
+        const updatedCircuit = { ...currentCircuit, intermediates: updatedList };
+
+        const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
+        setCircuits(updatedCircuits);
+        localStorage.setItem('solex_circuits_v3', JSON.stringify(updatedCircuits));
+      }
     };
 
     map.on('click', handleClick);
     return () => {
       map.off('click', handleClick);
     };
-  }, [isEditing]);
+  }, [isEditingTrack, isPlacingIntermediates, currentCircuit, trackMetrics, sortedIntermediates, circuits]);
 
-  // Synchronisation du tracé pendant l'édition
+  // Synchronisation visuelle du tracé pendant l'édition
   useEffect(() => {
-    if (!isEditing || !polylineRef.current) return;
-    polylineRef.current.setLatLngs(editPoints);
-  }, [editPoints, isEditing]);
+    if (!isEditingTrack || !polylineRef.current) return;
+    polylineRef.current.setLatLngs(editTrackPoints);
+  }, [editTrackPoints, isEditingTrack]);
 
   // Alerte sonore Bip
   const playBeep = () => {
@@ -286,17 +416,19 @@ export default function App() {
   };
 
   // BOUCLE DE SIMULATION HAUTE PRÉCISION (10 Hz = 100ms)
-  // Distance et temps cohérents : distance = vitesse * temps
+  // Calcul temps au tour & temps intermédiaires par rapport au départ
   useEffect(() => {
-    if (isEditing || currentCircuit.points.length < 2) return;
+    if (isEditingTrack || currentCircuit.points.length < 2) return;
 
     lastTickTimeRef.current = Date.now();
     lapStartTimeRef.current = Date.now();
     distanceCoveredInLapRef.current = 0;
+    recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
+    setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
 
     const interval = setInterval(() => {
       const now = Date.now();
-      const dt = (now - lastTickTimeRef.current) / 1000; // dt en secondes
+      const dt = (now - lastTickTimeRef.current) / 1000;
       lastTickTimeRef.current = now;
 
       if (simStopped) {
@@ -314,54 +446,40 @@ export default function App() {
 
       // Fluctuation réaliste de vitesse (virages / lignes droites)
       const currentDist = distanceCoveredInLapRef.current;
-      const variation = Math.sin(currentDist / 40) * 12;
+      const variation = Math.sin(currentDist / 45) * 12;
       const instSpeed = Math.max(55, Math.min(105, targetSpeed + variation));
-      currentSpeedRef.current = instSpeed;
       setSpeed(Math.round(instSpeed));
 
-      // Distance parcourue lors de ce tick (mètres = (km/h / 3.6) * s)
+      // Distance parcourue lors de ce tick
       const deltaMeters = (instSpeed / 3.6) * dt;
       const newLapDist = distanceCoveredInLapRef.current + deltaMeters;
       const totalTrackDist = trackMetrics.totalDistance;
 
-      // Détection des passages de secteurs
-      const prevDist = distanceCoveredInLapRef.current;
+      // Temps écoulé depuis le départ du tour actuel
       const lapTimeElapsed = (now - lapStartTimeRef.current) / 1000;
       setCurrentLapTime(lapTimeElapsed);
 
-      if (prevDist < trackMetrics.s1Dist && newLapDist >= trackMetrics.s1Dist) {
-        sectorSplitsRef.current.s1 = lapTimeElapsed;
-        setLiveS1(lapTimeElapsed);
-      }
-      if (prevDist < trackMetrics.s2Dist && newLapDist >= trackMetrics.s2Dist) {
-        const s2Duration = lapTimeElapsed - sectorSplitsRef.current.s1;
-        sectorSplitsRef.current.s2 = s2Duration;
-        setLiveS2(s2Duration);
-      }
-      if (prevDist < trackMetrics.s3Dist && newLapDist >= trackMetrics.s3Dist) {
-        const s3Duration = lapTimeElapsed - (sectorSplitsRef.current.s1 + sectorSplitsRef.current.s2);
-        sectorSplitsRef.current.s3 = s3Duration;
-        setLiveS3(s3Duration);
-      }
-      if (prevDist < trackMetrics.s4Dist && newLapDist >= trackMetrics.s4Dist) {
-        const s4Duration = lapTimeElapsed - (sectorSplitsRef.current.s1 + sectorSplitsRef.current.s2 + sectorSplitsRef.current.s3);
-        sectorSplitsRef.current.s4 = s4Duration;
-        setLiveS4(s4Duration);
-      }
+      // Détection du passage de chaque balise intermédiaire Sn
+      sortedIntermediates.forEach((inter, idx) => {
+        if (
+          distanceCoveredInLapRef.current < inter.distance &&
+          newLapDist >= inter.distance &&
+          recordedSplitsThisLapRef.current[idx] === null
+        ) {
+          // Temps intermédiaire mesuré par rapport à la ligne de départ !
+          recordedSplitsThisLapRef.current[idx] = lapTimeElapsed;
+          setLiveSplitTimes([...recordedSplitsThisLapRef.current]);
+        }
+      });
 
       // Franchissement de la ligne d'arrivée
       if (newLapDist >= totalTrackDist) {
         const totalLapTime = lapTimeElapsed;
-        const s5Duration = totalLapTime - (sectorSplitsRef.current.s1 + sectorSplitsRef.current.s2 + sectorSplitsRef.current.s3 + sectorSplitsRef.current.s4);
         const avgSpd = Math.round((totalTrackDist / totalLapTime) * 3.6);
 
         const newRecord: LapRecord = {
           lap: currentLap,
-          s1: sectorSplitsRef.current.s1,
-          s2: sectorSplitsRef.current.s2,
-          s3: sectorSplitsRef.current.s3,
-          s4: sectorSplitsRef.current.s4,
-          s5: s5Duration,
+          intermediateTimes: [...recordedSplitsThisLapRef.current],
           totalTime: totalLapTime,
           avgSpeed: avgSpd,
         };
@@ -373,16 +491,13 @@ export default function App() {
         setCurrentLap((l) => l + 1);
         lapStartTimeRef.current = now;
         distanceCoveredInLapRef.current = newLapDist - totalTrackDist;
-        sectorSplitsRef.current = { s1: 0, s2: 0, s3: 0, s4: 0 };
-        setLiveS1(null);
-        setLiveS2(null);
-        setLiveS3(null);
-        setLiveS4(null);
+        recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
+        setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
       } else {
         distanceCoveredInLapRef.current = newLapDist;
       }
 
-      // Mise à jour de la position du marqueur
+      // Mise à jour de la position du marqueur sur la carte
       const newPos = getPositionFromDistance(distanceCoveredInLapRef.current);
       if (solexMarkerRef.current) {
         solexMarkerRef.current.setLatLng(newPos);
@@ -390,7 +505,51 @@ export default function App() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isEditing, currentCircuit, trackMetrics, simStopped, targetSpeed, currentLap]);
+  }, [isEditingTrack, currentCircuit, trackMetrics, sortedIntermediates, simStopped, targetSpeed, currentLap]);
+
+  // Actions sur les balises intermédiaires
+  const handleRemoveLastIntermediate = () => {
+    if (!currentCircuit.intermediates || currentCircuit.intermediates.length === 0) return;
+    const updated = [...currentCircuit.intermediates];
+    updated.pop();
+    saveIntermediates(updated);
+  };
+
+  const handleClearAllIntermediates = () => {
+    if (window.confirm('Voulez-vous supprimer toutes les balises intermédiaires de ce circuit ?')) {
+      saveIntermediates([]);
+    }
+  };
+
+  // Répartition automatique équidistante
+  const handleAutoDistribute = (count: number) => {
+    const total = trackMetrics.totalDistance;
+    const step = total / (count + 1);
+    const newInters: IntermediatePoint[] = [];
+
+    for (let i = 1; i <= count; i++) {
+      const dist = step * i;
+      const latLng = getPositionFromDistance(dist);
+      newInters.push({
+        id: `auto-s${i}-${Date.now()}`,
+        name: `S${i}`,
+        distance: dist,
+        latLng: latLng,
+      });
+    }
+
+    saveIntermediates(newInters);
+  };
+
+  const saveIntermediates = (newList: IntermediatePoint[]) => {
+    const updatedCircuit = { ...currentCircuit, intermediates: newList };
+    const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
+    setCircuits(updatedCircuits);
+    localStorage.setItem('solex_circuits_v3', JSON.stringify(updatedCircuits));
+    setLapHistory([]);
+    setCurrentLap(1);
+    setBestLapTime(null);
+  };
 
   // Recherche de lieu OpenStreetMap Nominatim
   const handleSearchLocation = async (e: React.FormEvent) => {
@@ -399,7 +558,9 @@ export default function App() {
 
     setIsSearching(true);
     try {
-      const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=1`);
+      const res = await fetch(
+        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=1`
+      );
       const data = await res.json();
       if (data && data.length > 0) {
         const lat = parseFloat(data[0].lat);
@@ -408,10 +569,10 @@ export default function App() {
           mapRef.current.flyTo([lat, lon], 16, { duration: 1.5 });
         }
       } else {
-        alert('Lieu introuvable, essayez avec un nom de commune plus précis.');
+        alert('Lieu introuvable. Précisez la ville ou la région.');
       }
     } catch (err) {
-      alert('Erreur lors de la recherche du lieu.');
+      alert('Erreur lors de la recherche.');
     } finally {
       setIsSearching(false);
     }
@@ -429,24 +590,27 @@ export default function App() {
     mapRef.current.fitBounds(polylineRef.current.getBounds(), { padding: [40, 40] });
   };
 
-  // Enregistrer le nouveau circuit
+  // Enregistrer le nouveau circuit tracé
   const handleSaveCircuit = () => {
-    if (editPoints.length < 3) {
+    if (editTrackPoints.length < 3) {
       alert('Veuillez cliquer au moins 3 points sur la carte pour former une piste.');
       return;
     }
+
+    // Répartir 2 intermédiaires par défaut sur le nouveau circuit
     const newCircuit: SavedCircuit = {
       id: `circuit-${Date.now()}`,
       name: newCircuitName.trim() || `Circuit ${circuits.length + 1}`,
-      points: editPoints,
+      points: editTrackPoints,
+      intermediates: [],
     };
 
     const updated = [...circuits, newCircuit];
     setCircuits(updated);
-    localStorage.setItem('solex_circuits_v2', JSON.stringify(updated));
+    localStorage.setItem('solex_circuits_v3', JSON.stringify(updated));
     setSelectedCircuitId(newCircuit.id);
-    setIsEditing(false);
-    setEditPoints([]);
+    setIsEditingTrack(false);
+    setEditTrackPoints([]);
     setLapHistory([]);
     setCurrentLap(1);
     setBestLapTime(null);
@@ -461,15 +625,15 @@ export default function App() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '12px', gap: '12px', boxSizing: 'border-box' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '12px', gap: '10px', boxSizing: 'border-box', background: '#111827', color: '#f3f4f6', fontFamily: 'sans-serif' }}>
       {/* Alerte Arrêt Piste */}
       {alertStopped && (
-        <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '12px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '17px', animation: 'pulse 1s infinite' }}>
+        <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '12px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '16px', animation: 'pulse 1s infinite' }}>
           ⚠️ ALERTE STANDS : SOLEX IMMOBILISÉ EN PISTE DEPUIS PLUS DE 10 SECONDES !
         </div>
       )}
 
-      {/* Barre supérieure : Sélecteur de circuit, Recherche de lieu et Actions */}
+      {/* Barre supérieure : Sélecteur de circuit, Recherche, Actions */}
       <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1f2937', padding: '10px', borderRadius: '8px' }}>
         {/* Choix du circuit */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -481,9 +645,10 @@ export default function App() {
               setLapHistory([]);
               setCurrentLap(1);
               setBestLapTime(null);
+              setIsPlacingIntermediates(false);
             }}
-            disabled={isEditing}
-            style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '6px' }}
+            disabled={isEditingTrack}
+            style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '6px', fontSize: '13px' }}
           >
             {circuits.map((c) => (
               <option key={c.id} value={c.id}>
@@ -493,13 +658,13 @@ export default function App() {
           </select>
         </div>
 
-        {/* Longueur du circuit calculée */}
-        <div style={{ background: '#374151', padding: '6px 10px', borderRadius: '6px', fontSize: '13px', color: '#93c5fd' }}>
-          Longueur : <strong>{Math.round(trackMetrics.totalDistance)} m</strong>
+        {/* Longueur du circuit & nombre de balises */}
+        <div style={{ background: '#374151', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', color: '#93c5fd' }}>
+          📏 <strong>{Math.round(trackMetrics.totalDistance)} m</strong> | 🚩 <strong>{sortedIntermediates.length} balise{sortedIntermediates.length > 1 ? 's' : ''}</strong>
         </div>
 
         {/* Recherche de lieu */}
-        <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '6px', flex: '1', minWidth: '220px' }}>
+        <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '6px', flex: '1', minWidth: '200px' }}>
           <input
             type="text"
             placeholder="Chercher un lieu, ville ou circuit..."
@@ -520,16 +685,37 @@ export default function App() {
           🗺️ Vue Circuit
         </button>
 
+        {/* Bouton Gérer les intermédiaires */}
+        <button
+          onClick={() => {
+            setIsPlacingIntermediates(!isPlacingIntermediates);
+            setIsEditingTrack(false);
+          }}
+          style={{
+            padding: '6px 12px',
+            background: isPlacingIntermediates ? '#f59e0b' : '#374151',
+            color: isPlacingIntermediates ? '#111827' : 'white',
+            border: '1px solid #f59e0b',
+            borderRadius: '6px',
+            cursor: 'pointer',
+            fontWeight: 'bold',
+            fontSize: '13px',
+          }}
+        >
+          🚩 {isPlacingIntermediates ? 'Fermer Balises' : 'Placer Balises'}
+        </button>
+
         {/* Bouton Créer circuit */}
-        {!isEditing ? (
+        {!isEditingTrack ? (
           <button
             onClick={() => {
-              setIsEditing(true);
-              setEditPoints([]);
+              setIsEditingTrack(true);
+              setIsPlacingIntermediates(false);
+              setEditTrackPoints([]);
             }}
             style={{ padding: '6px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
           >
-            ✏️ Tracer un circuit
+            ✏️ Tracer circuit
           </button>
         ) : (
           <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
@@ -541,49 +727,88 @@ export default function App() {
               style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #f59e0b', borderRadius: '6px', fontSize: '13px' }}
             />
             <button onClick={handleSaveCircuit} style={{ padding: '6px 12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
-              💾 Enregistrer ({editPoints.length} pts)
+              💾 Enregistrer ({editTrackPoints.length} pts)
             </button>
-            <button onClick={() => setIsEditing(false)} style={{ padding: '6px 10px', background: '#6b7280', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+            <button onClick={() => setIsEditingTrack(false)} style={{ padding: '6px 10px', background: '#6b7280', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
               Annuler
             </button>
           </div>
         )}
       </div>
 
+      {/* Barre d'outils dédiée pour placer les balises intermédiaires */}
+      {isPlacingIntermediates && (
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#2d3748', border: '1px solid #f59e0b', padding: '10px', borderRadius: '8px' }}>
+          <div style={{ fontWeight: 'bold', color: '#fbbf24', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span>👉 Cliquez sur la piste pour ajouter une balise intermédiaire (S1, S2, ...)</span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '12px', color: '#9ca3af' }}>Répartition auto :</span>
+            <button onClick={() => handleAutoDistribute(1)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              1 balise (2 sect.)
+            </button>
+            <button onClick={() => handleAutoDistribute(2)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              2 balises (3 sect.)
+            </button>
+            <button onClick={() => handleAutoDistribute(3)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              3 balises (4 sect.)
+            </button>
+            <button onClick={() => handleAutoDistribute(4)} style={{ padding: '4px 8px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              4 balises (5 sect.)
+            </button>
+
+            <button onClick={handleRemoveLastIntermediate} style={{ padding: '4px 8px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              🗑️ Suppr. dernière
+            </button>
+            <button onClick={handleClearAllIntermediates} style={{ padding: '4px 8px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+              Vider tout
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Bandeau Télémétrie en direct */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: '8px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
         <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
           <div style={{ fontSize: '11px', color: '#9ca3af' }}>VITESSE GPS</div>
-          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#60a5fa' }}>{speed} <span style={{ fontSize: '12px' }}>km/h</span></div>
+          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#60a5fa' }}>{speed} <span style={{ fontSize: '12px' }}>km/h</span></div>
         </div>
         <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
           <div style={{ fontSize: '11px', color: '#9ca3af' }}>TOUR EN COURS</div>
-          <div style={{ fontSize: '24px', fontWeight: 'bold' }}>#{currentLap}</div>
+          <div style={{ fontSize: '22px', fontWeight: 'bold' }}>#{currentLap}</div>
         </div>
         <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
           <div style={{ fontSize: '11px', color: '#9ca3af' }}>CHRONO TOUR</div>
-          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#fef08a' }}>{formatSec(currentLapTime)}</div>
+          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#fef08a' }}>{formatSec(currentLapTime)}</div>
         </div>
         <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
           <div style={{ fontSize: '11px', color: '#9ca3af' }}>MEILLEUR TOUR</div>
-          <div style={{ fontSize: '24px', fontWeight: 'bold', color: '#34d399' }}>{formatSec(bestLapTime)}</div>
+          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#34d399' }}>{formatSec(bestLapTime)}</div>
         </div>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>SECTEURS S1 / S2</div>
-          <div style={{ fontSize: '13px', fontWeight: 'bold', marginTop: '4px' }}>
-            S1: <span style={{ color: '#f59e0b' }}>{formatSec(liveS1)}</span> | S2: <span style={{ color: '#f59e0b' }}>{formatSec(liveS2)}</span>
+
+        {/* Cartes dynamiques des temps intermédiaires par rapport à la ligne de départ */}
+        {sortedIntermediates.length > 0 ? (
+          sortedIntermediates.map((inter, idx) => (
+            <div key={inter.id} style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
+              <div style={{ fontSize: '11px', color: '#fbbf24' }}>
+                {inter.name} (DEPUIS DÉPART)
+              </div>
+              <div style={{ fontSize: '18px', fontWeight: 'bold', color: liveSplitTimes[idx] !== null ? '#f59e0b' : '#6b7280', marginTop: '2px' }}>
+                {formatSec(liveSplitTimes[idx])}
+              </div>
+              <div style={{ fontSize: '10px', color: '#9ca3af' }}>à {Math.round(inter.distance)}m</div>
+            </div>
+          ))
+        ) : (
+          <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '12px', color: '#6b7280' }}>Aucune balise intermédiaire</span>
           </div>
-        </div>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>SECTEURS S3 / S4</div>
-          <div style={{ fontSize: '13px', fontWeight: 'bold', marginTop: '4px' }}>
-            S3: <span style={{ color: '#f59e0b' }}>{formatSec(liveS3)}</span> | S4: <span style={{ color: '#f59e0b' }}>{formatSec(liveS4)}</span>
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Zone centrale : Carte Leaflet & Tableau des Tours */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(350px, 1fr) 380px', gap: '12px', flex: 1, minHeight: '380px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(350px, 1fr) 420px', gap: '10px', flex: 1, minHeight: '360px' }}>
         {/* Carte */}
         <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #374151', position: 'relative' }}>
           <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
@@ -611,28 +836,32 @@ export default function App() {
         {/* Tableau d'affichage complet de tous les tours */}
         <div style={{ background: '#1f2937', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: '15px', color: '#f3f4f6' }}>📋 Tableau de tous les tours</h3>
-            <span style={{ fontSize: '12px', color: '#9ca3af' }}>{lapHistory.length} tours bouclés</span>
+            <h3 style={{ margin: 0, fontSize: '14px', color: '#f3f4f6' }}>📋 Historique des tours & Intermédiaires</h3>
+            <span style={{ fontSize: '12px', color: '#9ca3af' }}>{lapHistory.length} tour{lapHistory.length > 1 ? 's' : ''} bouclé{lapHistory.length > 1 ? 's' : ''}</span>
+          </div>
+
+          <div style={{ fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>
+            * Les temps S1, S2... correspondent au chrono cumulé depuis la ligne de départ.
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #374151', borderRadius: '6px' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', textAlign: 'center' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
               <thead>
                 <tr style={{ background: '#374151', color: '#9ca3af', position: 'sticky', top: 0 }}>
                   <th style={{ padding: '6px 4px' }}>Tour</th>
-                  <th style={{ padding: '6px 4px' }}>S1</th>
-                  <th style={{ padding: '6px 4px' }}>S2</th>
-                  <th style={{ padding: '6px 4px' }}>S3</th>
-                  <th style={{ padding: '6px 4px' }}>S4</th>
-                  <th style={{ padding: '6px 4px' }}>S5</th>
-                  <th style={{ padding: '6px 4px' }}>Total</th>
-                  <th style={{ padding: '6px 4px' }}>Moy.</th>
+                  {sortedIntermediates.map((inter) => (
+                    <th key={inter.id} style={{ padding: '6px 4px', color: '#fbbf24' }}>
+                      {inter.name}
+                    </th>
+                  ))}
+                  <th style={{ padding: '6px 4px', color: '#60a5fa' }}>Temps au tour</th>
+                  <th style={{ padding: '6px 4px' }}>Vitesse Moy.</th>
                 </tr>
               </thead>
               <tbody>
                 {lapHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={8} style={{ padding: '20px', color: '#6b7280' }}>
+                    <td colSpan={3 + sortedIntermediates.length} style={{ padding: '24px', color: '#6b7280' }}>
                       En attente du premier tour bouclé...
                     </td>
                   </tr>
@@ -650,13 +879,20 @@ export default function App() {
                         }}
                       >
                         <td style={{ padding: '6px 4px' }}>#{item.lap}</td>
-                        <td style={{ padding: '6px 4px' }}>{item.s1.toFixed(1)}s</td>
-                        <td style={{ padding: '6px 4px' }}>{item.s2.toFixed(1)}s</td>
-                        <td style={{ padding: '6px 4px' }}>{item.s3.toFixed(1)}s</td>
-                        <td style={{ padding: '6px 4px' }}>{item.s4.toFixed(1)}s</td>
-                        <td style={{ padding: '6px 4px' }}>{item.s5.toFixed(1)}s</td>
-                        <td style={{ padding: '6px 4px', color: isBest ? '#34d399' : '#fbbf24' }}>{formatSec(item.totalTime)}</td>
-                        <td style={{ padding: '6px 4px', color: '#93c5fd' }}>{item.avgSpeed} km/h</td>
+                        {sortedIntermediates.map((_, idx) => {
+                          const splitVal = item.intermediateTimes[idx];
+                          return (
+                            <td key={idx} style={{ padding: '6px 4px', color: '#f59e0b' }}>
+                              {splitVal !== null && splitVal !== undefined ? `${splitVal.toFixed(1)}s` : '-'}
+                            </td>
+                          );
+                        })}
+                        <td style={{ padding: '6px 4px', color: isBest ? '#34d399' : '#fbbf24', fontWeight: 'bold' }}>
+                          {formatSec(item.totalTime)}
+                        </td>
+                        <td style={{ padding: '6px 4px', color: '#93c5fd' }}>
+                          {item.avgSpeed} km/h
+                        </td>
                       </tr>
                     );
                   })
