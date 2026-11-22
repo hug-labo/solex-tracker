@@ -13,7 +13,7 @@ L.Icon.Default.mergeOptions({
 // Icône personnalisée Solex
 const solexIcon = L.divIcon({
   className: 'custom-solex-marker',
-  html: '<div style="background-color:#3b82f6;color:white;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:3px solid white;box-shadow:0 0 10px rgba(0,0,0,0.5);transform:translate(-2px,-2px);">🛵</div>',
+  html: '<div style="background-color:#3b82f6;color:white;width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:18px;border:3px solid white;box-shadow:0 0 10px rgba(0,0,0,0.6);transform:translate(-2px,-2px);">🛵</div>',
   iconSize: [34, 34],
   iconAnchor: [17, 17],
 });
@@ -22,9 +22,9 @@ const solexIcon = L.divIcon({
 const createSectorIcon = (label: string, bg: string, distanceM?: number) =>
   L.divIcon({
     className: 'custom-sector-marker',
-    html: `<div style="background-color:${bg};color:white;padding:3px 8px;border-radius:6px;font-weight:bold;font-size:11px;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.4);white-space:nowrap;display:flex;flex-direction:column;align-items:center;line-height:1.2;">
+    html: `<div style="background-color:${bg};color:white;padding:3px 8px;border-radius:6px;font-weight:bold;font-size:11px;border:2px solid white;box-shadow:0 2px 8px rgba(0,0,0,0.5);white-space:nowrap;display:flex;flex-direction:column;align-items:center;line-height:1.2;">
       <span>${label}</span>
-      ${distanceM !== undefined ? `<span style="font-size:9px;opacity:0.9;font-weight:normal;">${Math.round(distanceM)}m</span>` : ''}
+      ${distanceM !== undefined ? `<span style="font-size:9px;opacity:0.95;font-weight:normal;">${Math.round(distanceM)}m</span>` : ''}
     </div>`,
     iconSize: [60, 30],
     iconAnchor: [30, 15],
@@ -32,14 +32,14 @@ const createSectorIcon = (label: string, bg: string, distanceM?: number) =>
 
 export interface IntermediatePoint {
   id: string;
-  name: string; // Ex: "S1", "S2", etc.
-  distance: number; // Distance en mètres depuis la ligne de départ le long de la piste
+  name: string;
+  distance: number; // en mètres depuis la ligne de départ
   latLng: [number, number];
 }
 
 export interface LapRecord {
   lap: number;
-  intermediateTimes: (number | null)[]; // Temps de passage par rapport au départ (secondes)
+  intermediateTimes: (number | null)[];
   totalTime: number;
   avgSpeed: number;
 }
@@ -51,7 +51,6 @@ export interface SavedCircuit {
   intermediates?: IntermediatePoint[];
 }
 
-// Circuits par défaut avec points intermédiaires préconfigurés
 const DEFAULT_CIRCUITS: SavedCircuit[] = [
   {
     id: 'circuit-mans',
@@ -92,12 +91,10 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
   },
 ];
 
-// Calcul géodésique de distance en mètres
 function calculateDistanceMeters(p1: [number, number], p2: [number, number]): number {
   return L.latLng(p1[0], p1[1]).distanceTo(L.latLng(p2[0], p2[1]));
 }
 
-// Projeter un clic sur la piste pour trouver la position exacte et la distance depuis le départ
 function projectPointOnTrack(
   clickLatLng: [number, number],
   trackPoints: [number, number][],
@@ -156,7 +153,6 @@ function projectPointOnTrack(
   return { distance: bestTrackDist, latLng: bestLatLng, segmentIndex: bestSegIdx, t: bestT };
 }
 
-// Re-positionner la ligne de départ en faisant pivoter la boucle de la piste
 function reanchorTrackToStartPoint(
   trackPoints: [number, number][],
   clickPos: [number, number],
@@ -180,24 +176,14 @@ function reanchorTrackToStartPoint(
 }
 
 export default function App() {
-  // Liste des circuits avec support de localStorage
   const [circuits, setCircuits] = useState<SavedCircuit[]>(() => {
     try {
-      const saved = localStorage.getItem('solex_circuits_v4');
+      const saved = localStorage.getItem('solex_circuits_v5');
       if (saved) return JSON.parse(saved);
+      const savedV4 = localStorage.getItem('solex_circuits_v4');
+      if (savedV4) return JSON.parse(savedV4);
       const savedV3 = localStorage.getItem('solex_circuits_v3');
       if (savedV3) return JSON.parse(savedV3);
-      const savedV2 = localStorage.getItem('solex_circuits_v2');
-      if (savedV2) {
-        const parsed = JSON.parse(savedV2);
-        return parsed.map((c: any) => ({
-          ...c,
-          intermediates: c.intermediates || [
-            { id: 's1', name: 'S1', distance: 500, latLng: c.points[1] || c.points[0] },
-            { id: 's2', name: 'S2', distance: 1000, latLng: c.points[2] || c.points[0] },
-          ],
-        }));
-      }
     } catch (e) {
       console.error('Erreur lecture circuits', e);
     }
@@ -210,12 +196,15 @@ export default function App() {
     return circuits.find((c) => c.id === selectedCircuitId) || circuits[0] || DEFAULT_CIRCUITS[0];
   }, [circuits, selectedCircuitId]);
 
-  // Mode création de nouveau circuit (tracé)
+  // Choix de la vue carte : Satellite, Plan standard, ou Vue Sombre / Nuit
+  const [mapLayerType, setMapLayerType] = useState<'satellite' | 'streets' | 'dark'>('satellite');
+
+  // Mode tracé de nouveau circuit
   const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
   const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
 
-  // Mode placement des balises et ligne de départ
+  // Mode gestion du départ et des balises
   const [isPlacingMenuOpen, setIsPlacingMenuOpen] = useState<boolean>(false);
   const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate'>('none');
   const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
@@ -226,7 +215,7 @@ export default function App() {
 
   // Données de télémétrie en direct
   const [speed, setSpeed] = useState<number>(0);
-  const [targetSpeed, setTargetSpeed] = useState<number>(85);
+  const [targetSpeed] = useState<number>(85);
   const [currentLap, setCurrentLap] = useState<number>(1);
   const [currentLapTime, setCurrentLapTime] = useState<number>(0);
   const [lapHistory, setLapHistory] = useState<LapRecord[]>([]);
@@ -235,25 +224,40 @@ export default function App() {
   // Temps intermédiaires EN COURS (par rapport à la ligne de départ)
   const [liveSplitTimes, setLiveSplitTimes] = useState<(number | null)[]>([]);
 
-  // Arrêt d'urgence et alerte
+  // Arrêt d'urgence (silencieux) et durée d'arrêt
   const [simStopped, setSimStopped] = useState<boolean>(false);
   const [alertStopped, setAlertStopped] = useState<boolean>(false);
+  const [stopElapsedSeconds, setStopElapsedSeconds] = useState<number>(0);
 
-  // Références carte et objets Leaflet
+  // Références carte Leaflet
   const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const currentTileLayerRef = useRef<L.TileLayer | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
   const solexMarkerRef = useRef<L.Marker | null>(null);
   const sectorMarkersRef = useRef<L.Marker[]>([]);
 
-  // Références physiques pour la simulation
+  // Références physiques de simulation
+  // Permet une reprise immédiate et exacte au point d'arrêt sans réinitialisation !
   const distanceCoveredInLapRef = useRef<number>(0);
   const lapStartTimeRef = useRef<number>(Date.now());
   const lastTickTimeRef = useRef<number>(Date.now());
+  const simStoppedRef = useRef<boolean>(false);
   const stopDurationRef = useRef<number>(0);
   const recordedSplitsThisLapRef = useRef<(number | null)[]>([]);
 
-  // Notification temporaire
+  // Synchroniser la ref d'arrêt pour la boucle de simulation
+  useEffect(() => {
+    simStoppedRef.current = simStopped;
+    if (!simStopped) {
+      // Reprise de la course : réajuster le chronomètre pour que le temps d'arrêt n'occasionne aucun saut de position
+      lastTickTimeRef.current = Date.now();
+      setAlertStopped(false);
+      setStopElapsedSeconds(0);
+      stopDurationRef.current = 0;
+    }
+  }, [simStopped]);
+
   const showToast = (msg: string) => {
     setNotificationMsg(msg);
     setTimeout(() => {
@@ -261,7 +265,6 @@ export default function App() {
     }, 4000);
   };
 
-  // Calcul des métriques du circuit sélectionné
   const trackMetrics = useMemo(() => {
     const pts = currentCircuit.points;
     if (pts.length < 2) return { totalDistance: 1000, cumDistances: [0] };
@@ -281,7 +284,6 @@ export default function App() {
     };
   }, [currentCircuit]);
 
-  // Points intermédiaires triés par distance depuis le départ
   const sortedIntermediates = useMemo(() => {
     const list = currentCircuit.intermediates ? [...currentCircuit.intermediates] : [];
     list.sort((a, b) => a.distance - b.distance);
@@ -291,7 +293,6 @@ export default function App() {
     }));
   }, [currentCircuit.intermediates]);
 
-  // Positionner le Solex sur le tracé en fonction de la distance parcourue
   const getPositionFromDistance = (dist: number): [number, number] => {
     const pts = currentCircuit.points;
     if (pts.length < 2) return pts[0] || [47.95, 0.2];
@@ -320,14 +321,21 @@ export default function App() {
     const initialCenter = currentCircuit.points[0] || [47.95, 0.205];
     const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      attribution: '© OpenStreetMap contributors',
-      maxZoom: 19,
-    }).addTo(map);
+    // Couche initiale
+    const satLayer = L.tileLayer(
+      'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+      {
+        attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+        maxZoom: 19,
+      }
+    ).addTo(map);
+
+    currentTileLayerRef.current = satLayer;
 
     polylineRef.current = L.polyline([...currentCircuit.points, currentCircuit.points[0]], {
-      color: '#3b82f6',
+      color: '#38bdf8',
       weight: 5,
+      opacity: 0.9,
     }).addTo(map);
 
     solexMarkerRef.current = L.marker(initialCenter, { icon: solexIcon }).addTo(map);
@@ -339,12 +347,52 @@ export default function App() {
     };
   }, []);
 
-  // Affichage dynamique des balises : Ligne de Départ / Arrivée et tous les Intermédiaires Sn
+  // Changement dynamique de la couche de carte (Satellite, Plan, Sombre)
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
 
-    // Supprimer les anciens marqueurs de secteurs
+    if (currentTileLayerRef.current) {
+      currentTileLayerRef.current.remove();
+    }
+
+    let newLayer: L.TileLayer;
+    if (mapLayerType === 'satellite') {
+      newLayer = L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {
+          attribution: 'Tiles &copy; Esri World Imagery',
+          maxZoom: 19,
+        }
+      );
+    } else if (mapLayerType === 'dark') {
+      newLayer = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; OpenStreetMap &copy; CartoDB',
+        maxZoom: 19,
+      });
+    } else {
+      newLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        attribution: '&copy; OpenStreetMap contributors',
+        maxZoom: 19,
+      });
+    }
+
+    newLayer.addTo(map);
+    currentTileLayerRef.current = newLayer;
+
+    // Ajuster la couleur du tracé pour une lisibilité optimale
+    if (polylineRef.current) {
+      polylineRef.current.setStyle({
+        color: mapLayerType === 'streets' ? '#2563eb' : '#38bdf8',
+      });
+    }
+  }, [mapLayerType]);
+
+  // Affichage des balises Départ / Arrivée et Intermédiaires Sn
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
     sectorMarkersRef.current.forEach((m) => m.remove());
     sectorMarkersRef.current = [];
 
@@ -355,33 +403,32 @@ export default function App() {
 
     const markers: L.Marker[] = [];
 
-    // Ligne Départ / Arrivée (Point 0 actuel)
+    // Ligne de départ / arrivée (Point 0)
     const startPos = pts[0];
     const startMarker = L.marker(startPos, {
       icon: createSectorIcon('🏁 DÉPART / ARRIVÉE', '#10b981', 0),
     }).addTo(map);
-    startMarker.bindPopup('<b>🏁 Ligne de Départ / Arrivée</b><br>Chronométrage à 00:00.0<br><small>Pour la déplacer, cliquez sur "🏁 Déplacer Départ" puis sur la piste.</small>');
+    startMarker.bindPopup('<b>🏁 Ligne de Départ / Arrivée</b><br>Chronométrage à 00:00.0');
     markers.push(startMarker);
 
-    // Balises intermédiaires dynamiques S1, S2, ..., Sn
+    // Balises intermédiaires
     sortedIntermediates.forEach((inter) => {
       const pos = inter.latLng || getPositionFromDistance(inter.distance);
       const marker = L.marker(pos, {
         icon: createSectorIcon(`🚩 ${inter.name}`, '#f59e0b', inter.distance),
       }).addTo(map);
-      marker.bindPopup(`<b>Balise ${inter.name}</b><br>Distance départ : ${Math.round(inter.distance)} m<br><small>Temps mesuré par rapport à la ligne de départ</small>`);
+      marker.bindPopup(`<b>Balise ${inter.name}</b><br>Distance départ : ${Math.round(inter.distance)} m<br><small>Temps mesuré depuis le départ</small>`);
       markers.push(marker);
     });
 
     sectorMarkersRef.current = markers;
 
-    // Ajuster le tracé du circuit
     if (polylineRef.current) {
       polylineRef.current.setLatLngs([...pts, pts[0]]);
     }
   }, [currentCircuit, isEditingTrack, sortedIntermediates]);
 
-  // Clic sur la carte : gestion tracé de circuit, placement ligne de départ, ou balise intermédiaire
+  // Gestion des clics sur la carte
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -389,17 +436,16 @@ export default function App() {
     const handleClick = (e: L.LeafletMouseEvent) => {
       const clickPos: [number, number] = [e.latlng.lat, e.latlng.lng];
 
-      // Cas 1 : En train de tracer un nouveau circuit
+      // Cas 1 : Tracé d'un nouveau circuit
       if (isEditingTrack) {
         setEditTrackPoints((prev) => [...prev, clickPos]);
         return;
       }
 
-      // Cas 2 : Déplacer la ligne de Départ / Arrivée
+      // Cas 2 : Déplacement au clic de la ligne de Départ / Arrivée
       if (placementMode === 'startLine') {
         const newTrackPoints = reanchorTrackToStartPoint(currentCircuit.points, clickPos, trackMetrics.cumDistances);
 
-        // Recalculer les distances des balises existantes par rapport au nouveau départ
         const newCum: number[] = [0];
         let newTotal = 0;
         for (let i = 0; i < newTrackPoints.length; i++) {
@@ -426,18 +472,19 @@ export default function App() {
 
         const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
         setCircuits(updatedCircuits);
-        localStorage.setItem('solex_circuits_v4', JSON.stringify(updatedCircuits));
+        localStorage.setItem('solex_circuits_v5', JSON.stringify(updatedCircuits));
         setPlacementMode('none');
-        showToast('🏁 Ligne de Départ / Arrivée repositionnée avec succès !');
-        // Réinitialiser la simulation sur le nouveau départ
+        showToast('🏁 Ligne de Départ / Arrivée repositionnée au point cliqué !');
+
+        // Réaligner la simulation au départ
+        distanceCoveredInLapRef.current = 0;
         setLapHistory([]);
         setCurrentLap(1);
         setBestLapTime(null);
-        distanceCoveredInLapRef.current = 0;
         return;
       }
 
-      // Cas 3 : Ajouter une balise intermédiaire
+      // Cas 3 : Ajout d'une balise intermédiaire
       if (placementMode === 'intermediate') {
         const { distance, latLng } = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
 
@@ -466,37 +513,19 @@ export default function App() {
     };
   }, [isEditingTrack, placementMode, currentCircuit, trackMetrics, sortedIntermediates, circuits]);
 
-  // Synchronisation visuelle du tracé pendant l'édition
+  // Synchronisation du tracé pendant l'édition
   useEffect(() => {
     if (!isEditingTrack || !polylineRef.current) return;
     polylineRef.current.setLatLngs(editTrackPoints);
   }, [editTrackPoints, isEditingTrack]);
 
-  // Alerte sonore Bip
-  const playBeep = () => {
-    try {
-      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      osc.type = 'sawtooth';
-      osc.frequency.setValueAtTime(850, ctx.currentTime);
-      osc.connect(ctx.destination);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.35);
-    } catch (e) {
-      console.log('Audio notification bloquée');
-    }
-  };
-
   // BOUCLE DE SIMULATION HAUTE PRÉCISION (10 Hz = 100ms)
-  // Calcul temps au tour & temps intermédiaires cumulés depuis le départ
+  // Gère l'arrêt silencieux et le redémarrage STRICTEMENT au point d'arrêt
   useEffect(() => {
     if (isEditingTrack || currentCircuit.points.length < 2) return;
 
     lastTickTimeRef.current = Date.now();
     lapStartTimeRef.current = Date.now();
-    distanceCoveredInLapRef.current = 0;
     recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
     setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
 
@@ -505,42 +534,47 @@ export default function App() {
       const dt = (now - lastTickTimeRef.current) / 1000;
       lastTickTimeRef.current = now;
 
-      if (simStopped) {
+      // SI ARRÊTÉ : LE SOLEX RESTE STRICTEMENT AU POINT D'ARRÊT
+      if (simStoppedRef.current) {
         setSpeed(0);
         stopDurationRef.current += dt;
+        const totalStopSec = Math.floor(stopDurationRef.current);
+        setStopElapsedSeconds(totalStopSec);
+
+        // Alerte visuelle silencieuse après 10 secondes (aucun signal sonore)
         if (stopDurationRef.current >= 10) {
           setAlertStopped(true);
-          playBeep();
         }
         return;
       }
 
+      // Si le Solex roule
       stopDurationRef.current = 0;
       setAlertStopped(false);
+      setStopElapsedSeconds(0);
 
-      // Fluctuation réaliste de vitesse (virages / lignes droites)
+      // Fluctuation réaliste de vitesse (55 - 105 km/h)
       const currentDist = distanceCoveredInLapRef.current;
       const variation = Math.sin(currentDist / 45) * 12;
       const instSpeed = Math.max(55, Math.min(105, targetSpeed + variation));
       setSpeed(Math.round(instSpeed));
 
-      // Distance parcourue lors de ce tick
+      // Distance parcourue (mètres = km/h / 3.6 * dt)
+      // Reprend exactement à partir de distanceCoveredInLapRef.current !
       const deltaMeters = (instSpeed / 3.6) * dt;
       const newLapDist = distanceCoveredInLapRef.current + deltaMeters;
       const totalTrackDist = trackMetrics.totalDistance;
 
-      // Temps écoulé depuis le départ du tour actuel
       const lapTimeElapsed = (now - lapStartTimeRef.current) / 1000;
       setCurrentLapTime(lapTimeElapsed);
 
-      // Détection du passage de chaque balise intermédiaire Sn
+      // Détection des franchissements de balises intermédiaires
       sortedIntermediates.forEach((inter, idx) => {
         if (
           distanceCoveredInLapRef.current < inter.distance &&
           newLapDist >= inter.distance &&
           recordedSplitsThisLapRef.current[idx] === null
         ) {
-          // Temps intermédiaire mesuré par rapport à la ligne de départ !
           recordedSplitsThisLapRef.current[idx] = lapTimeElapsed;
           setLiveSplitTimes([...recordedSplitsThisLapRef.current]);
         }
@@ -561,7 +595,6 @@ export default function App() {
         setLapHistory((prev) => [newRecord, ...prev]);
         setBestLapTime((prev) => (!prev || totalLapTime < prev ? totalLapTime : prev));
 
-        // Réinitialisation pour le tour suivant
         setCurrentLap((l) => l + 1);
         lapStartTimeRef.current = now;
         distanceCoveredInLapRef.current = newLapDist - totalTrackDist;
@@ -579,9 +612,8 @@ export default function App() {
     }, 100);
 
     return () => clearInterval(interval);
-  }, [isEditingTrack, currentCircuit, trackMetrics, sortedIntermediates, simStopped, targetSpeed, currentLap]);
+  }, [isEditingTrack, currentCircuit, trackMetrics, sortedIntermediates, targetSpeed, currentLap]);
 
-  // Actions sur les balises intermédiaires
   const handleRemoveLastIntermediate = () => {
     if (!currentCircuit.intermediates || currentCircuit.intermediates.length === 0) return;
     const updated = [...currentCircuit.intermediates];
@@ -595,7 +627,6 @@ export default function App() {
     }
   };
 
-  // Répartition automatique équidistante
   const handleAutoDistribute = (count: number) => {
     const total = trackMetrics.totalDistance;
     const step = total / (count + 1);
@@ -613,20 +644,19 @@ export default function App() {
     }
 
     saveIntermediates(newInters);
-    showToast(`⚡ ${count} balise(s) répartie(s) équitablement le long du tracé.`);
+    showToast(`⚡ ${count} balise(s) réparties régulièrement.`);
   };
 
   const saveIntermediates = (newList: IntermediatePoint[]) => {
     const updatedCircuit = { ...currentCircuit, intermediates: newList };
     const updatedCircuits = circuits.map((c) => (c.id === currentCircuit.id ? updatedCircuit : c));
     setCircuits(updatedCircuits);
-    localStorage.setItem('solex_circuits_v4', JSON.stringify(updatedCircuits));
+    localStorage.setItem('solex_circuits_v5', JSON.stringify(updatedCircuits));
     setLapHistory([]);
     setCurrentLap(1);
     setBestLapTime(null);
   };
 
-  // Recherche de lieu OpenStreetMap Nominatim
   const handleSearchLocation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!searchQuery.trim()) return;
@@ -644,7 +674,7 @@ export default function App() {
           mapRef.current.flyTo([lat, lon], 16, { duration: 1.5 });
         }
       } else {
-        alert('Lieu introuvable. Précisez la commune ou le lieu-dit.');
+        alert('Lieu introuvable.');
       }
     } catch (err) {
       alert('Erreur lors de la recherche.');
@@ -653,7 +683,6 @@ export default function App() {
     }
   };
 
-  // Recentrer la carte
   const handleRecenterSolex = () => {
     if (!mapRef.current) return;
     const pos = getPositionFromDistance(distanceCoveredInLapRef.current);
@@ -665,7 +694,6 @@ export default function App() {
     mapRef.current.fitBounds(polylineRef.current.getBounds(), { padding: [40, 40] });
   };
 
-  // Enregistrer le nouveau circuit tracé
   const handleSaveCircuit = () => {
     if (editTrackPoints.length < 3) {
       alert('Veuillez cliquer au moins 3 points sur la carte pour former une boucle fermée.');
@@ -681,14 +709,14 @@ export default function App() {
 
     const updated = [...circuits, newCircuit];
     setCircuits(updated);
-    localStorage.setItem('solex_circuits_v4', JSON.stringify(updated));
+    localStorage.setItem('solex_circuits_v5', JSON.stringify(updated));
     setSelectedCircuitId(newCircuit.id);
     setIsEditingTrack(false);
     setEditTrackPoints([]);
     setLapHistory([]);
     setCurrentLap(1);
     setBestLapTime(null);
-    showToast('Circuit enregistré ! Le premier point tracé est votre ligne de départ.');
+    showToast('Circuit enregistré ! Le 1er point cliqué est la ligne de départ.');
   };
 
   const formatSec = (sec: number | null) => {
@@ -700,26 +728,26 @@ export default function App() {
   };
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '12px', gap: '10px', boxSizing: 'border-box', background: '#111827', color: '#f3f4f6', fontFamily: 'sans-serif' }}>
-      {/* Alerte Arrêt Piste */}
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '10px', gap: '8px', boxSizing: 'border-box', background: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif' }}>
+      {/* Alerte Arrêt Piste : SILENCIEUSE, purement visuelle */}
       {alertStopped && (
-        <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '12px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '16px', animation: 'pulse 1s infinite' }}>
-          ⚠️ ALERTE STANDS : SOLEX IMMOBILISÉ EN PISTE DEPUIS PLUS DE 10 SECONDES !
+        <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', border: '2px solid #fecaca', boxShadow: '0 0 15px rgba(220,38,38,0.7)', animation: 'pulse 1s infinite' }}>
+          🚨 ALERTE STANDS : SOLEX IMMOBILISÉ EN PISTE DEPUIS {stopElapsedSeconds}s !
         </div>
       )}
 
       {/* Notification Toast */}
       {notificationMsg && (
-        <div style={{ backgroundColor: '#059669', color: 'white', padding: '10px 16px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '14px', boxShadow: '0 4px 10px rgba(0,0,0,0.4)' }}>
+        <div style={{ backgroundColor: '#059669', color: 'white', padding: '8px 14px', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', boxShadow: '0 4px 10px rgba(0,0,0,0.4)' }}>
           {notificationMsg}
         </div>
       )}
 
-      {/* Barre supérieure : Sélecteur de circuit, Recherche, Actions */}
-      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1f2937', padding: '10px', borderRadius: '8px' }}>
+      {/* Barre supérieure principale */}
+      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1e293b', padding: '8px 12px', borderRadius: '8px' }}>
         {/* Choix du circuit */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span style={{ fontSize: '13px', color: '#9ca3af' }}>Circuit :</span>
+          <span style={{ fontSize: '12px', color: '#94a3b8' }}>Circuit :</span>
           <select
             value={selectedCircuitId}
             onChange={(e) => {
@@ -731,7 +759,7 @@ export default function App() {
               setIsPlacingMenuOpen(false);
             }}
             disabled={isEditingTrack}
-            style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '6px', fontSize: '13px' }}
+            style={{ padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
           >
             {circuits.map((c) => (
               <option key={c.id} value={c.id}>
@@ -741,34 +769,84 @@ export default function App() {
           </select>
         </div>
 
-        {/* Longueur du circuit & nombre de balises */}
-        <div style={{ background: '#374151', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', color: '#93c5fd' }}>
-          📏 <strong>{Math.round(trackMetrics.totalDistance)} m</strong> | 🏁 <strong>Départ actif</strong> | 🚩 <strong>{sortedIntermediates.length} balise{sortedIntermediates.length > 1 ? 's' : ''}</strong>
+        {/* Sélecteur de type de carte (Satellite, Plan, Sombre) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px 6px', borderRadius: '6px', border: '1px solid #334155' }}>
+          <span style={{ fontSize: '11px', color: '#94a3b8', marginRight: '2px' }}>Fond :</span>
+          <button
+            onClick={() => setMapLayerType('satellite')}
+            style={{
+              padding: '4px 8px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: 'pointer',
+              background: mapLayerType === 'satellite' ? '#2563eb' : 'transparent',
+              color: mapLayerType === 'satellite' ? 'white' : '#94a3b8',
+            }}
+          >
+            🛰️ Satellite
+          </button>
+          <button
+            onClick={() => setMapLayerType('streets')}
+            style={{
+              padding: '4px 8px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: 'pointer',
+              background: mapLayerType === 'streets' ? '#2563eb' : 'transparent',
+              color: mapLayerType === 'streets' ? 'white' : '#94a3b8',
+            }}
+          >
+            🗺️ Plan
+          </button>
+          <button
+            onClick={() => setMapLayerType('dark')}
+            style={{
+              padding: '4px 8px',
+              fontSize: '11px',
+              fontWeight: 'bold',
+              borderRadius: '4px',
+              border: 'none',
+              cursor: 'pointer',
+              background: mapLayerType === 'dark' ? '#2563eb' : 'transparent',
+              color: mapLayerType === 'dark' ? 'white' : '#94a3b8',
+            }}
+          >
+            🌙 Nuit
+          </button>
+        </div>
+
+        {/* Métriques circuit */}
+        <div style={{ background: '#334155', padding: '5px 8px', borderRadius: '6px', fontSize: '11px', color: '#7dd3fc' }}>
+          📏 <strong>{Math.round(trackMetrics.totalDistance)} m</strong> | 🚩 <strong>{sortedIntermediates.length} balise{sortedIntermediates.length > 1 ? 's' : ''}</strong>
         </div>
 
         {/* Recherche de lieu */}
-        <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '6px', flex: '1', minWidth: '200px' }}>
+        <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '4px', flex: '1', minWidth: '180px' }}>
           <input
             type="text"
-            placeholder="Chercher un lieu, ville ou circuit..."
+            placeholder="Chercher un lieu, circuit..."
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            style={{ flex: 1, padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '6px', fontSize: '13px' }}
+            style={{ flex: 1, padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
           />
-          <button type="submit" disabled={isSearching} style={{ padding: '6px 12px', background: '#4b5563', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+          <button type="submit" disabled={isSearching} style={{ padding: '5px 10px', background: '#475569', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
             {isSearching ? '...' : '🔍'}
           </button>
         </form>
 
         {/* Boutons Recentrage */}
-        <button onClick={handleRecenterSolex} style={{ padding: '6px 10px', background: '#374151', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}>
-          🎯 Recentrer Solex
+        <button onClick={handleRecenterSolex} style={{ padding: '5px 8px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
+          🎯 Recentrer
         </button>
-        <button onClick={handleFitCircuit} style={{ padding: '6px 10px', background: '#374151', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '13px' }}>
-          🗺️ Vue Circuit
+        <button onClick={handleFitCircuit} style={{ padding: '5px 8px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
+          🗺️ Circuit complet
         </button>
 
-        {/* Bouton Gérer les balises et la ligne de départ */}
+        {/* Bouton Départ & Balises */}
         <button
           onClick={() => {
             setIsPlacingMenuOpen(!isPlacingMenuOpen);
@@ -776,20 +854,20 @@ export default function App() {
             if (isPlacingMenuOpen) setPlacementMode('none');
           }}
           style={{
-            padding: '6px 12px',
-            background: isPlacingMenuOpen ? '#10b981' : '#374151',
+            padding: '5px 10px',
+            background: isPlacingMenuOpen ? '#10b981' : '#334155',
             color: 'white',
             border: '1px solid #10b981',
             borderRadius: '6px',
             cursor: 'pointer',
             fontWeight: 'bold',
-            fontSize: '13px',
+            fontSize: '12px',
           }}
         >
-          🏁 {isPlacingMenuOpen ? 'Fermer Éditeur Lignes' : 'Placer Départ & Balises'}
+          🏁 {isPlacingMenuOpen ? 'Fermer Lignes' : 'Départ & Balises'}
         </button>
 
-        {/* Bouton Créer circuit */}
+        {/* Bouton Tracer circuit */}
         {!isEditingTrack ? (
           <button
             onClick={() => {
@@ -798,91 +876,89 @@ export default function App() {
               setPlacementMode('none');
               setEditTrackPoints([]);
             }}
-            style={{ padding: '6px 12px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '13px' }}
+            style={{ padding: '5px 10px', background: '#2563eb', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
           >
             ✏️ Tracer circuit
           </button>
         ) : (
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
             <input
               type="text"
               placeholder="Nom du circuit"
               value={newCircuitName}
               onChange={(e) => setNewCircuitName(e.target.value)}
-              style={{ padding: '6px 10px', background: '#374151', color: 'white', border: '1px solid #f59e0b', borderRadius: '6px', fontSize: '13px' }}
+              style={{ padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #f59e0b', borderRadius: '6px', fontSize: '12px' }}
             />
-            <button onClick={handleSaveCircuit} style={{ padding: '6px 12px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>
+            <button onClick={handleSaveCircuit} style={{ padding: '5px 10px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}>
               💾 Enregistrer ({editTrackPoints.length} pts)
             </button>
-            <button onClick={() => setIsEditingTrack(false)} style={{ padding: '6px 10px', background: '#6b7280', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer' }}>
+            <button onClick={() => setIsEditingTrack(false)} style={{ padding: '5px 8px', background: '#64748b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
               Annuler
             </button>
           </div>
         )}
       </div>
 
-      {/* Barre d'outils dédiée pour placer la ligne de départ et les balises intermédiaires */}
+      {/* Barre d'outils Départ et Balises */}
       {isPlacingMenuOpen && (
-        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center', background: '#1f2937', border: '2px solid #10b981', padding: '10px 14px', borderRadius: '8px' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#a7f3d0' }}>Action au clic :</span>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1e293b', border: '2px solid #10b981', padding: '8px 12px', borderRadius: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#a7f3d0' }}>Action au clic :</span>
 
-            {/* Bouton pour déplacer la ligne de départ */}
             <button
               onClick={() => setPlacementMode(placementMode === 'startLine' ? 'none' : 'startLine')}
               style={{
-                padding: '6px 12px',
-                background: placementMode === 'startLine' ? '#10b981' : '#374151',
+                padding: '5px 10px',
+                background: placementMode === 'startLine' ? '#10b981' : '#334155',
                 color: 'white',
                 border: '1px solid #10b981',
                 borderRadius: '6px',
                 cursor: 'pointer',
                 fontWeight: 'bold',
-                fontSize: '12px',
-                boxShadow: placementMode === 'startLine' ? '0 0 10px rgba(16, 185, 129, 0.6)' : 'none',
+                fontSize: '11px',
+                boxShadow: placementMode === 'startLine' ? '0 0 10px rgba(16, 185, 129, 0.7)' : 'none',
               }}
             >
               🏁 {placementMode === 'startLine' ? '👉 Cliquez sur la piste pour fixer le Départ' : 'Déplacer Ligne Départ/Arrivée'}
             </button>
 
-            {/* Bouton pour ajouter une balise intermédiaire */}
             <button
               onClick={() => setPlacementMode(placementMode === 'intermediate' ? 'none' : 'intermediate')}
               style={{
-                padding: '6px 12px',
-                background: placementMode === 'intermediate' ? '#f59e0b' : '#374151',
-                color: placementMode === 'intermediate' ? '#111827' : 'white',
+                padding: '5px 10px',
+                background: placementMode === 'intermediate' ? '#f59e0b' : '#334155',
+                color: placementMode === 'intermediate' ? '#0f172a' : 'white',
                 border: '1px solid #f59e0b',
                 borderRadius: '6px',
                 cursor: 'pointer',
                 fontWeight: 'bold',
-                fontSize: '12px',
-                boxShadow: placementMode === 'intermediate' ? '0 0 10px rgba(245, 158, 11, 0.6)' : 'none',
+                fontSize: '11px',
+                boxShadow: placementMode === 'intermediate' ? '0 0 10px rgba(245, 158, 11, 0.7)' : 'none',
               }}
             >
-              🚩 {placementMode === 'intermediate' ? '👉 Cliquez sur la piste pour ajouter une balise' : '+ Ajouter Balise (S1, S2...)'}
+              🚩 {placementMode === 'intermediate' ? '👉 Cliquez sur la piste pour ajouter une balise' : '+ Balise (S1, S2...)'}
             </button>
           </div>
 
-          <div style={{ display: 'flex', gap: '6px', marginLeft: 'auto', flexWrap: 'wrap', alignItems: 'center' }}>
-            <span style={{ fontSize: '12px', color: '#9ca3af' }}>Répartition auto :</span>
-            <button onClick={() => handleAutoDistribute(1)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+          <div style={{ display: 'flex', gap: '4px', marginLeft: 'auto', flexWrap: 'wrap', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>Auto :</span>
+            <button onClick={() => handleAutoDistribute(1)} style={{ padding: '3px 6px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               1 balise
             </button>
-            <button onClick={() => handleAutoDistribute(2)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+            <button onClick={() => handleAutoDistribute(2)} style={{ padding: '3px 6px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               2 balises
             </button>
-            <button onClick={() => handleAutoDistribute(3)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+            <button onClick={() => handleAutoDistribute(3)} style={{ padding: '3px 6px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               3 balises
             </button>
-            <button onClick={() => handleAutoDistribute(4)} style={{ padding: '4px 8px', background: '#374151', color: 'white', border: '1px solid #4b5563', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+            <button onClick={() => handleAutoDistribute(4)} style={{ padding: '3px 6px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               4 balises
             </button>
 
-            <button onClick={handleRemoveLastIntermediate} style={{ padding: '4px 8px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+            <button onClick={handleRemoveLastIntermediate} style={{ padding: '3px 6px', background: '#ef4444', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               🗑️ Suppr. dernière
             </button>
-            <button onClick={handleClearAllIntermediates} style={{ padding: '4px 8px', background: '#7f1d1d', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}>
+            <button onClick={handleClearAllIntermediates} style={{ padding: '3px 6px', background: '#991b1b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px' }}>
               Vider tout
             </button>
           </div>
@@ -890,52 +966,52 @@ export default function App() {
       )}
 
       {/* Bandeau Télémétrie en direct */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '8px' }}>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>VITESSE GPS</div>
-          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#60a5fa' }}>{speed} <span style={{ fontSize: '12px' }}>km/h</span></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: '6px' }}>
+        <div style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center' }}>
+          <div style={{ fontSize: '10px', color: '#94a3b8' }}>VITESSE GPS</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#38bdf8' }}>{speed} <span style={{ fontSize: '11px' }}>km/h</span></div>
         </div>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>TOUR EN COURS</div>
-          <div style={{ fontSize: '22px', fontWeight: 'bold' }}>#{currentLap}</div>
+        <div style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center' }}>
+          <div style={{ fontSize: '10px', color: '#94a3b8' }}>TOUR EN COURS</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold' }}>#{currentLap}</div>
         </div>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>CHRONO TOUR</div>
-          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#fef08a' }}>{formatSec(currentLapTime)}</div>
+        <div style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center' }}>
+          <div style={{ fontSize: '10px', color: '#94a3b8' }}>CHRONO TOUR</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#fef08a' }}>{formatSec(currentLapTime)}</div>
         </div>
-        <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-          <div style={{ fontSize: '11px', color: '#9ca3af' }}>MEILLEUR TOUR</div>
-          <div style={{ fontSize: '22px', fontWeight: 'bold', color: '#34d399' }}>{formatSec(bestLapTime)}</div>
+        <div style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center' }}>
+          <div style={{ fontSize: '10px', color: '#94a3b8' }}>MEILLEUR TOUR</div>
+          <div style={{ fontSize: '20px', fontWeight: 'bold', color: '#4ade80' }}>{formatSec(bestLapTime)}</div>
         </div>
 
-        {/* Cartes dynamiques des temps intermédiaires par rapport à la ligne de départ */}
+        {/* Temps intermédiaires dynamiques depuis la ligne de départ */}
         {sortedIntermediates.length > 0 ? (
           sortedIntermediates.map((inter, idx) => (
-            <div key={inter.id} style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '11px', color: '#fbbf24' }}>
-                {inter.name} (DEPUIS DÉPART)
+            <div key={inter.id} style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center' }}>
+              <div style={{ fontSize: '10px', color: '#fbbf24' }}>
+                {inter.name} (DÉPART)
               </div>
-              <div style={{ fontSize: '18px', fontWeight: 'bold', color: liveSplitTimes[idx] !== null ? '#f59e0b' : '#6b7280', marginTop: '2px' }}>
+              <div style={{ fontSize: '16px', fontWeight: 'bold', color: liveSplitTimes[idx] !== null ? '#f59e0b' : '#64748b', marginTop: '2px' }}>
                 {formatSec(liveSplitTimes[idx])}
               </div>
-              <div style={{ fontSize: '10px', color: '#9ca3af' }}>à {Math.round(inter.distance)}m</div>
+              <div style={{ fontSize: '9px', color: '#94a3b8' }}>à {Math.round(inter.distance)}m</div>
             </div>
           ))
         ) : (
-          <div style={{ background: '#1f2937', padding: '8px', borderRadius: '8px', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-            <span style={{ fontSize: '12px', color: '#6b7280' }}>Aucune balise intermédiaire</span>
+          <div style={{ background: '#1e293b', padding: '6px', borderRadius: '6px', textAlign: 'center', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <span style={{ fontSize: '11px', color: '#64748b' }}>Aucune balise</span>
           </div>
         )}
       </div>
 
       {/* Zone centrale : Carte Leaflet & Tableau des Tours */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(350px, 1fr) 420px', gap: '10px', flex: 1, minHeight: '360px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'minmax(350px, 1fr) 420px', gap: '8px', flex: 1, minHeight: '350px' }}>
         {/* Carte */}
-        <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #374151', position: 'relative' }}>
+        <div style={{ borderRadius: '8px', overflow: 'hidden', border: '1px solid #334155', position: 'relative' }}>
           <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
 
-          {/* Bouton simulation arrêt piste */}
-          <div style={{ position: 'absolute', bottom: '12px', left: '12px', zIndex: 1000 }}>
+          {/* Bouton arrêt / reprise : reprend STRICTEMENT au point d'arrêt */}
+          <div style={{ position: 'absolute', bottom: '12px', left: '12px', zIndex: 1000, display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button
               onClick={() => setSimStopped(!simStopped)}
               style={{
@@ -946,43 +1022,50 @@ export default function App() {
                 borderRadius: '6px',
                 cursor: 'pointer',
                 fontWeight: 'bold',
-                boxShadow: '0 4px 6px rgba(0,0,0,0.3)',
+                fontSize: '12px',
+                boxShadow: '0 4px 10px rgba(0,0,0,0.5)',
               }}
             >
-              {simStopped ? '▶️ Reprendre la course' : '🛑 Simuler arrêt piste (>10s)'}
+              {simStopped ? '▶️ Reprendre au point d'arrêt' : '🛑 Arrêt piste (test alerte silencieuse)'}
             </button>
+
+            {simStopped && (
+              <span style={{ background: 'rgba(0,0,0,0.75)', color: '#fca5a5', padding: '6px 10px', borderRadius: '6px', fontSize: '12px', fontWeight: 'bold' }}>
+                Immobilisé : {stopElapsedSeconds}s
+              </span>
+            )}
           </div>
         </div>
 
         {/* Tableau d'affichage complet de tous les tours */}
-        <div style={{ background: '#1f2937', borderRadius: '8px', padding: '12px', display: 'flex', flexDirection: 'column', gap: '8px', overflow: 'hidden' }}>
+        <div style={{ background: '#1e293b', borderRadius: '8px', padding: '10px', display: 'flex', flexDirection: 'column', gap: '6px', overflow: 'hidden' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h3 style={{ margin: 0, fontSize: '14px', color: '#f3f4f6' }}>📋 Historique des tours & Intermédiaires</h3>
-            <span style={{ fontSize: '12px', color: '#9ca3af' }}>{lapHistory.length} tour{lapHistory.length > 1 ? 's' : ''} bouclé{lapHistory.length > 1 ? 's' : ''}</span>
+            <h3 style={{ margin: 0, fontSize: '13px', color: '#f8fafc' }}>📋 Historique des tours & Intermédiaires</h3>
+            <span style={{ fontSize: '11px', color: '#94a3b8' }}>{lapHistory.length} tour{lapHistory.length > 1 ? 's' : ''}</span>
           </div>
 
-          <div style={{ fontSize: '11px', color: '#9ca3af', fontStyle: 'italic' }}>
-            * Les temps S1, S2... correspondent au chrono cumulé depuis la ligne de départ.
+          <div style={{ fontSize: '10px', color: '#94a3b8', fontStyle: 'italic' }}>
+            * Les temps S1, S2... sont mesurés en cumulé depuis la ligne de départ.
           </div>
 
-          <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #374151', borderRadius: '6px' }}>
+          <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #334155', borderRadius: '6px' }}>
             <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
               <thead>
-                <tr style={{ background: '#374151', color: '#9ca3af', position: 'sticky', top: 0 }}>
-                  <th style={{ padding: '6px 4px' }}>Tour</th>
+                <tr style={{ background: '#334155', color: '#94a3b8', position: 'sticky', top: 0 }}>
+                  <th style={{ padding: '5px 3px' }}>Tour</th>
                   {sortedIntermediates.map((inter) => (
-                    <th key={inter.id} style={{ padding: '6px 4px', color: '#fbbf24' }}>
+                    <th key={inter.id} style={{ padding: '5px 3px', color: '#fbbf24' }}>
                       {inter.name}
                     </th>
                   ))}
-                  <th style={{ padding: '6px 4px', color: '#60a5fa' }}>Temps au tour</th>
-                  <th style={{ padding: '6px 4px' }}>Vitesse Moy.</th>
+                  <th style={{ padding: '5px 3px', color: '#38bdf8' }}>Chrono</th>
+                  <th style={{ padding: '5px 3px' }}>Moy.</th>
                 </tr>
               </thead>
               <tbody>
                 {lapHistory.length === 0 ? (
                   <tr>
-                    <td colSpan={3 + sortedIntermediates.length} style={{ padding: '24px', color: '#6b7280' }}>
+                    <td colSpan={3 + sortedIntermediates.length} style={{ padding: '24px', color: '#64748b' }}>
                       En attente du premier tour bouclé...
                     </td>
                   </tr>
@@ -993,25 +1076,25 @@ export default function App() {
                       <tr
                         key={item.lap}
                         style={{
-                          borderBottom: '1px solid #2d3748',
+                          borderBottom: '1px solid #334155',
                           background: isBest ? 'rgba(16, 185, 129, 0.15)' : 'transparent',
-                          color: isBest ? '#34d399' : '#f3f4f6',
+                          color: isBest ? '#4ade80' : '#f8fafc',
                           fontWeight: isBest ? 'bold' : 'normal',
                         }}
                       >
-                        <td style={{ padding: '6px 4px' }}>#{item.lap}</td>
+                        <td style={{ padding: '5px 3px' }}>#{item.lap}</td>
                         {sortedIntermediates.map((_, idx) => {
                           const splitVal = item.intermediateTimes[idx];
                           return (
-                            <td key={idx} style={{ padding: '6px 4px', color: '#f59e0b' }}>
+                            <td key={idx} style={{ padding: '5px 3px', color: '#f59e0b' }}>
                               {splitVal !== null && splitVal !== undefined ? `${splitVal.toFixed(1)}s` : '-'}
                             </td>
                           );
                         })}
-                        <td style={{ padding: '6px 4px', color: isBest ? '#34d399' : '#fbbf24', fontWeight: 'bold' }}>
+                        <td style={{ padding: '5px 3px', color: isBest ? '#4ade80' : '#fbbf24', fontWeight: 'bold' }}>
                           {formatSec(item.totalTime)}
                         </td>
-                        <td style={{ padding: '6px 4px', color: '#93c5fd' }}>
+                        <td style={{ padding: '5px 3px', color: '#7dd3fc' }}>
                           {item.avgSpeed} km/h
                         </td>
                       </tr>
