@@ -341,9 +341,316 @@ function buildSqlExport(teamId: string, laps: LapRecord[], pitStops: PitStopReco
 // ============================================================================
 // COMPOSANT PRINCIPAL APP
 // ============================================================================
+
+// ============================================================================
+// COMPOSANT BALISE GPS SOLEX EMBARQUÉ (DÉDIÉ MOBILE / APK ANDROID)
+// ============================================================================
+interface SolexTransmitterViewProps {
+  onSwitchToStand: () => void;
+  defaultServerUrl: string;
+}
+
+function SolexTransmitterView({ onSwitchToStand, defaultServerUrl }: SolexTransmitterViewProps) {
+  const [isTransmitting, setIsTransmitting] = useState<boolean>(false);
+  const [teamId, setTeamId] = useState<string>('equipe-1');
+  const [serverUrl, setServerUrl] = useState<string>(() => {
+    if (typeof window !== 'undefined' && window.location.origin && window.location.origin.startsWith('http')) {
+      return window.location.origin;
+    }
+    return defaultServerUrl || 'https://solex-tracker.onrender.com';
+  });
+
+  const [currentSpeed, setCurrentSpeed] = useState<number>(0);
+  const [maxSpeed, setMaxSpeed] = useState<number>(0);
+  const [accuracy, setAccuracy] = useState<number | null>(null);
+  const [lat, setLat] = useState<number | null>(null);
+  const [lng, setLng] = useState<number | null>(null);
+  const [pointsSent, setPointsSent] = useState<number>(0);
+  const [lastTime, setLastTime] = useState<string>('--:--:--');
+  const [wsState, setWsState] = useState<'connected' | 'connecting' | 'disconnected'>('disconnected');
+  const [wakeLockActive, setWakeLockActive] = useState<boolean>(false);
+  const [batteryLevel, setBatteryLevel] = useState<number | null>(null);
+
+  const wsRef = useRef<WebSocket | null>(null);
+  const watchIdRef = useRef<number | null>(null);
+  const wakeLockRef = useRef<any>(null);
+
+  // Détection batterie si API disponible
+  useEffect(() => {
+    if (typeof navigator !== 'undefined' && 'getBattery' in navigator) {
+      (navigator as any).getBattery().then((battery: any) => {
+        setBatteryLevel(Math.round(battery.level * 100));
+        battery.addEventListener('levelchange', () => {
+          setBatteryLevel(Math.round(battery.level * 100));
+        });
+      }).catch(() => {});
+    }
+  }, []);
+
+  const startTracking = async () => {
+    setIsTransmitting(true);
+    setWsState('connecting');
+
+    // 1. Maintien en éveil (WakeLock pour éviter la veille processeur)
+    if (typeof navigator !== 'undefined' && 'wakeLock' in navigator) {
+      try {
+        const wl = await (navigator as any).wakeLock.request('screen');
+        wakeLockRef.current = wl;
+        setWakeLockActive(true);
+      } catch (err) {
+        console.warn('WakeLock non disponible ou refusé', err);
+      }
+    }
+
+    // 2. Connexion WebSocket vers Render
+    try {
+      const wsProto = serverUrl.startsWith('https') ? 'wss:' : 'ws:';
+      const cleanHost = serverUrl.replace(/^https?:\/\//, '');
+      const wsUrl = `${wsProto}//${cleanHost}`;
+      
+      const ws = new WebSocket(wsUrl);
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setWsState('connected');
+        ws.send(JSON.stringify({
+          type: 'register',
+          role: 'solex',
+          teamId
+        }));
+      };
+
+      ws.onclose = () => {
+        setWsState('disconnected');
+      };
+
+      ws.onerror = () => {
+        setWsState('disconnected');
+      };
+    } catch (e) {
+      console.warn('Erreur init WebSocket', e);
+      setWsState('disconnected');
+    }
+
+    // 3. Géolocalisation haute fréquence
+    if (typeof navigator !== 'undefined' && 'geolocation' in navigator) {
+      const id = navigator.geolocation.watchPosition(
+        (pos) => {
+          const latitude = pos.coords.latitude;
+          const longitude = pos.coords.longitude;
+          const speedKmh = pos.coords.speed !== null && pos.coords.speed !== undefined && pos.coords.speed >= 0
+            ? Math.round(pos.coords.speed * 3.6)
+            : 0;
+          const acc = pos.coords.accuracy ? Math.round(pos.coords.accuracy * 10) / 10 : null;
+          const heading = pos.coords.heading;
+
+          setLat(latitude);
+          setLng(longitude);
+          setCurrentSpeed(speedKmh);
+          setMaxSpeed(prev => Math.max(prev, speedKmh));
+          setAccuracy(acc);
+
+          const packet = {
+            type: 'telemetry',
+            teamId,
+            lat: latitude,
+            lng: longitude,
+            speed: speedKmh,
+            heading: heading || null,
+            accuracy: acc,
+            timestamp: pos.timestamp || Date.now()
+          };
+
+          // Envoi WebSocket prioritaire
+          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+            wsRef.current.send(JSON.stringify(packet));
+          } else {
+            // Secours HTTP si le socket est temporairement fermé
+            fetch(`${serverUrl}/api/telemetry`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(packet)
+            }).catch(() => {});
+          }
+
+          setPointsSent(p => p + 1);
+          setLastTime(new Date().toLocaleTimeString());
+        },
+        (err) => console.warn('Erreur GPS', err),
+        {
+          enableHighAccuracy: true,
+          maximumAge: 500,
+          timeout: 10000
+        }
+      );
+      watchIdRef.current = id;
+    }
+  };
+
+  const stopTracking = () => {
+    setIsTransmitting(false);
+    if (watchIdRef.current !== null && typeof navigator !== 'undefined') {
+      navigator.geolocation.clearWatch(watchIdRef.current);
+      watchIdRef.current = null;
+    }
+    if (wsRef.current) {
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+    if (wakeLockRef.current) {
+      wakeLockRef.current.release().catch(() => {});
+      wakeLockRef.current = null;
+      setWakeLockActive(false);
+    }
+    setWsState('disconnected');
+  };
+
+  useEffect(() => {
+    return () => {
+      stopTracking();
+    };
+  }, []);
+
+  return (
+    <div style={{ minHeight: '100vh', background: '#090d16', color: '#f8fafc', padding: '16px', display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+      {/* Barre supérieure */}
+      <div style={{ width: '100%', maxWidth: '480px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '24px' }}>🛵</span>
+          <div>
+            <div style={{ fontWeight: 'bold', fontSize: '16px' }}>Solex Tracking</div>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>Balise Embarquée (APK)</div>
+          </div>
+        </div>
+        <button
+          onClick={onSwitchToStand}
+          style={{ background: '#1e293b', border: '1px solid #334155', color: '#cbd5e1', padding: '6px 12px', borderRadius: '6px', fontSize: '11px', cursor: 'pointer' }}
+        >
+          🏁 Vue Stands
+        </button>
+      </div>
+
+      {/* Carte principale */}
+      <div style={{ width: '100%', maxWidth: '480px', background: '#0f172a', border: '1px solid #1e293b', borderRadius: '16px', padding: '20px', display: 'flex', flexDirection: 'column', gap: '16px', boxShadow: '0 10px 25px rgba(0,0,0,0.5)' }}>
+        
+        {/* Gros bouton Démarrer / Arrêter */}
+        <button
+          onClick={isTransmitting ? stopTracking : startTracking}
+          style={{
+            width: '100%',
+            padding: '18px',
+            borderRadius: '12px',
+            border: 'none',
+            fontWeight: 'bold',
+            fontSize: '18px',
+            cursor: 'pointer',
+            background: isTransmitting ? '#ef4444' : '#10b981',
+            color: 'white',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '10px',
+            boxShadow: isTransmitting ? '0 0 25px rgba(239,68,68,0.5)' : '0 0 25px rgba(16,185,129,0.5)',
+            transition: 'all 0.2s',
+          }}
+        >
+          {isTransmitting ? '🔴 ARRÊTER L\'ÉMISSION' : '🟢 DÉMARRER LE SUIVI GPS'}
+        </button>
+
+        {/* Compteur de vitesse géant */}
+        <div style={{ background: '#050811', border: '1px solid #1e293b', borderRadius: '14px', padding: '24px 16px', textAlign: 'center' }}>
+          <div style={{ fontSize: '12px', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '1px' }}>Vitesse Instantanée</div>
+          <div style={{ fontSize: '76px', fontWeight: '900', lineHeight: '1', color: currentSpeed > 0 ? '#38bdf8' : '#64748b', margin: '8px 0' }}>
+            {currentSpeed}
+          </div>
+          <div style={{ fontSize: '14px', color: '#94a3b8', fontWeight: 'bold' }}>KM / H</div>
+          <div style={{ marginTop: '8px', fontSize: '12px', color: '#64748b' }}>
+            Vitesse max atteinte : <strong style={{ color: '#cbd5e1' }}>{maxSpeed} km/h</strong>
+          </div>
+        </div>
+
+        {/* Grille des statuts */}
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '10px' }}>
+          <div style={{ background: '#1e293b', padding: '12px', borderRadius: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>Précision GPS</div>
+            <div style={{ fontSize: '16px', fontWeight: 'bold', color: accuracy && accuracy <= 5 ? '#4ade80' : accuracy ? '#fbbf24' : '#94a3b8' }}>
+              {accuracy !== null ? `± ${accuracy} m` : 'Recherche GPS...'}
+            </div>
+          </div>
+
+          <div style={{ background: '#1e293b', padding: '12px', borderRadius: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>Connexion Serveur</div>
+            <div style={{ fontSize: '14px', fontWeight: 'bold', color: wsState === 'connected' ? '#4ade80' : wsState === 'connecting' ? '#fbbf24' : '#ef4444' }}>
+              {wsState === 'connected' ? '🟢 Connecté' : wsState === 'connecting' ? '🟡 Connexion...' : '🔴 Déconnecté'}
+            </div>
+          </div>
+
+          <div style={{ background: '#1e293b', padding: '12px', borderRadius: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>Points transmis</div>
+            <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#cbd5e1' }}>
+              {pointsSent.toLocaleString('fr-FR')}
+            </div>
+          </div>
+
+          <div style={{ background: '#1e293b', padding: '12px', borderRadius: '10px' }}>
+            <div style={{ fontSize: '11px', color: '#94a3b8' }}>Dernier paquet</div>
+            <div style={{ fontSize: '16px', fontWeight: 'bold', color: '#cbd5e1' }}>
+              {lastTime}
+            </div>
+          </div>
+        </div>
+
+        {/* Maintien écran et batterie */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', background: '#1e293b', padding: '10px 14px', borderRadius: '10px', fontSize: '12px', color: '#94a3b8' }}>
+          <div>
+            Éveil CPU : <strong style={{ color: wakeLockActive ? '#4ade80' : '#fbbf24' }}>{wakeLockActive ? 'Actif' : 'Standard'}</strong>
+          </div>
+          {batteryLevel !== null && (
+            <div>
+              Batterie : <strong style={{ color: batteryLevel > 20 ? '#cbd5e1' : '#ef4444' }}>{batteryLevel}%</strong>
+            </div>
+          )}
+        </div>
+
+        {/* Paramètres de l'équipe */}
+        <div style={{ borderTop: '1px solid #1e293b', paddingTop: '14px', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+          <div>
+            <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '3px' }}>Identifiant Équipe :</label>
+            <input
+              type="text"
+              value={teamId}
+              disabled={isTransmitting}
+              onChange={(e) => setTeamId(e.target.value)}
+              style={{ width: '100%', padding: '8px', background: '#090d16', border: '1px solid #334155', borderRadius: '6px', color: 'white', fontSize: '13px' }}
+            />
+          </div>
+
+          <div>
+            <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '3px' }}>Serveur Relais Render :</label>
+            <input
+              type="text"
+              value={serverUrl}
+              disabled={isTransmitting}
+              onChange={(e) => setServerUrl(e.target.value)}
+              style={{ width: '100%', padding: '8px', background: '#090d16', border: '1px solid #334155', borderRadius: '6px', color: 'white', fontSize: '12px' }}
+            />
+          </div>
+        </div>
+
+        {/* Message d'instruction rassurant */}
+        <div style={{ fontSize: '11px', color: '#64748b', textAlign: 'center', lineHeight: '1.4', background: '#050811', padding: '10px', borderRadius: '8px' }}>
+          💡 Une fois le suivi démarré, le téléphone peut être glissé dans la sacoche du Solex. Les chronos, intermédiaires et alertes d'arrêt sont gérés directement par l'équipe aux stands.
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // Navigation principale de rôle
-  const [viewRole, setViewRole] = useState<'stand' | 'circuit'>('stand');
+  // Détection si l'application tourne dans l'APK Android (Capacitor) ou sur mobile dédié
+  const isCapacitorNative = typeof window !== 'undefined' && Boolean((window as any).Capacitor?.isNativePlatform?.() || window.location.search.includes('mode=solex'));
+  const [viewRole, setViewRole] = useState<'stand' | 'circuit' | 'transmitter'>(isCapacitorNative ? 'transmitter' : 'stand');
 
   // Circuits enregistrés
   const [circuits, setCircuits] = useState<SavedCircuit[]>(() => {
@@ -1499,6 +1806,10 @@ export default function App() {
   // ============================================================================
   // RENDU INTERFACE UTILISATEUR
   // ============================================================================
+  if (viewRole === 'transmitter') {
+    return <SolexTransmitterView onSwitchToStand={() => setViewRole('stand')} defaultServerUrl={serverWsUrl.replace(/^ws/, 'http')} />;
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif', overflow: 'hidden' }}>
 
@@ -1545,6 +1856,21 @@ export default function App() {
             }}
           >
             🛠️ Éditeur Circuit
+          </button>
+          <button
+            onClick={() => setViewRole('transmitter')}
+            style={{
+              padding: '6px 14px',
+              fontSize: '12px',
+              fontWeight: 'bold',
+              borderRadius: '5px',
+              border: 'none',
+              cursor: 'pointer',
+              background: (viewRole as string) === 'transmitter' ? '#10b981' : 'transparent',
+              color: (viewRole as string) === 'transmitter' ? 'white' : '#94a3b8',
+            }}
+          >
+            🛵 Balise Solex (APK)
           </button>
         </div>
 
