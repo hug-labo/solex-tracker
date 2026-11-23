@@ -773,6 +773,8 @@ export default function App() {
   const signalLostDurationRef = useRef<number>(0);
   const pitDurationRef = useRef<number>(0);
 
+
+
   // Sauvegarde persistante des circuits
   useEffect(() => {
     try {
@@ -822,6 +824,29 @@ export default function App() {
     }
     return Math.round(total);
   }, [editTrackPoints]);
+
+  // Keep the simulation loop stable across React state updates. The refs expose
+  // the latest values without tearing down the interval and resetting lap time.
+  const isSimRunningRef = useRef(isSimRunning);
+  isSimRunningRef.current = isSimRunning;
+  const targetSpeedRef = useRef(targetSpeed);
+  targetSpeedRef.current = targetSpeed;
+  const simStoppedRef = useRef(simStopped);
+  simStoppedRef.current = simStopped;
+  const simInPitStopRef = useRef(simInPitStop);
+  simInPitStopRef.current = simInPitStop;
+  const simSignalLostRef = useRef(simSignalLost);
+  simSignalLostRef.current = simSignalLost;
+  const currentDriverRef = useRef(currentDriver);
+  currentDriverRef.current = currentDriver;
+  const currentStintRef = useRef(currentStint);
+  currentStintRef.current = currentStint;
+  const currentCircuitRef = useRef(currentCircuit);
+  currentCircuitRef.current = currentCircuit;
+  const trackMetricsRef = useRef(trackMetrics);
+  trackMetricsRef.current = trackMetrics;
+  const sortedIntermediatesRef = useRef(sortedIntermediates);
+  sortedIntermediatesRef.current = sortedIntermediates;
 
   const [liveSplitTimes, setLiveSplitTimes] = useState<(number | null)[]>(() =>
     new Array(sortedIntermediates.length).fill(null)
@@ -1325,98 +1350,84 @@ export default function App() {
     if (standDataSource !== 'simulation' || isEditingTrack || currentCircuit.points.length < 2) return;
 
     lastTickTimeRef.current = Date.now();
-    lapStartTimeRef.current = Date.now();
-    recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
-    setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
+    // Initialiser le premier tour une seule fois, jamais à chaque changement d'état.
+    if (currentLapRef.current === 1 && distanceCoveredInLapRef.current === 0 && currentLapTime === 0) {
+      lapStartTimeRef.current = Date.now();
+    }
 
     const interval = setInterval(() => {
-      // Si la simulation est mise en pause ou arrêtée par l'utilisateur
-      if (!isSimRunning) {
+      const now = Date.now();
+      const dt = Math.max(0, (now - lastTickTimeRef.current) / 1000);
+      lastTickTimeRef.current = now;
+
+      if (!isSimRunningRef.current) {
+        // Pause manuelle : geler l'horloge sans perdre le temps déjà écoulé.
+        lapStartTimeRef.current += dt * 1000;
         setSpeed(0);
         return;
       }
 
-      const now = Date.now();
-      const dt = (now - lastTickTimeRef.current) / 1000;
-      lastTickTimeRef.current = now;
+      const circuit = currentCircuitRef.current;
+      const metrics = trackMetricsRef.current;
+      const intermediates = sortedIntermediatesRef.current;
+      const totalTrackLen = metrics.totalDistanceMeters;
+      const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
+      setCurrentLapTime(currentLapDuration);
 
-      // 1. Perte de signal
-      if (simSignalLost) {
+      // Perte de signal : le temps du tour continue, mais la position ne progresse pas.
+      if (simSignalLostRef.current) {
         signalLostDurationRef.current += dt;
-        const lostSec = Math.floor(signalLostDurationRef.current);
-        setSignalLostElapsedSeconds(lostSec);
+        setSignalLostElapsedSeconds(Math.floor(signalLostDurationRef.current));
         if (signalLostDurationRef.current >= 5) setAlertSignalLost(true);
         if (solexMarkerRef.current && lastKnownPosRef.current) {
           solexMarkerRef.current.setLatLng(lastKnownPosRef.current);
         }
         setSpeed(0);
         return;
+      } else {
+        signalLostDurationRef.current = 0;
+        setSignalLostElapsedSeconds(0);
+        setAlertSignalLost(false);
       }
 
-      // 2. Zone des stands
-      const currentlyInPits = (currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3 && lastKnownPosRef.current)
-        ? isPointInPolygon(lastKnownPosRef.current, currentCircuit.pitPolygon)
-        : isDistanceInPits(
-            distanceCoveredInLapRef.current,
-            currentCircuit.pitEntryDistance,
-            currentCircuit.pitExitDistance
-          );
-      setInPitsState(currentlyInPits || simInPitStop);
+      const currentlyInPits = (circuit.pitPolygon && circuit.pitPolygon.length >= 3)
+        ? isPointInPolygon(lastKnownPosRef.current, circuit.pitPolygon)
+        : isDistanceInPits(distanceCoveredInLapRef.current, circuit.pitEntryDistance, circuit.pitExitDistance);
+      setInPitsState(currentlyInPits || simInPitStopRef.current);
 
-      // 3. Arrêt aux stands (le chrono total du tour continue de tourner)
-      if (simInPitStop) {
+      // Arrêt aux stands : le chrono continue sans remise à zéro.
+      if (simInPitStopRef.current) {
         setSpeed(0);
         pitDurationRef.current += dt;
         setPitTimerSeconds(Math.floor(pitDurationRef.current));
         setAlertStopped(false);
         stopDurationRef.current = 0;
         setStopElapsedSeconds(0);
-
-        const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
-        setCurrentLapTime(currentLapDuration);
         return;
       }
 
-      // 4. Panne en piste simulée (le chrono du tour continue de tourner sans pause)
-      if (simStopped) {
+      // Arrêt sur piste : le chrono continue sans remise à zéro.
+      if (simStoppedRef.current) {
         setSpeed(0);
         if (!currentlyInPits) {
           stopDurationRef.current += dt;
-          const stoppedSec = Math.floor(stopDurationRef.current);
-          setStopElapsedSeconds(stoppedSec);
-          if (stopDurationRef.current >= 10) {
-            setAlertStopped(true);
-          }
+          setStopElapsedSeconds(Math.floor(stopDurationRef.current));
+          if (stopDurationRef.current >= 10) setAlertStopped(true);
         }
-
-        const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
-        setCurrentLapTime(currentLapDuration);
         return;
-      } else {
-        stopDurationRef.current = 0;
-        setStopElapsedSeconds(0);
-        setAlertStopped(false);
       }
+      stopDurationRef.current = 0;
+      setStopElapsedSeconds(0);
+      setAlertStopped(false);
 
-      // 5. Progression normale en piste
-      const currentSimSpeed = currentlyInPits ? 25 : targetSpeed;
-      setSpeed(currentSimSpeed);
-
-      const distanceCoveredInInterval = (currentSimSpeed * 1000 / 3600) * dt;
-      distanceCoveredInLapRef.current += distanceCoveredInInterval;
-
-      const totalTrackLen = trackMetrics.totalDistanceMeters;
       if (totalTrackLen <= 0) return;
+      const currentSimSpeed = currentlyInPits ? 25 : targetSpeedRef.current;
+      setSpeed(currentSimSpeed);
+      distanceCoveredInLapRef.current += (currentSimSpeed * 1000 / 3600) * dt;
 
-      const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
-      setCurrentLapTime(currentLapDuration);
-
-      // Franchissement des balises intermédiaires
-      sortedIntermediates.forEach((inter, idx) => {
-        if (
-          recordedSplitsThisLapRef.current[idx] === null &&
-          distanceCoveredInLapRef.current >= inter.distance
-        ) {
+      // Les temps intermédiaires sont cumulés depuis le début du tour, arrêts inclus.
+      intermediates.forEach((inter, idx) => {
+        if (recordedSplitsThisLapRef.current[idx] === null && distanceCoveredInLapRef.current >= inter.distance) {
           const splitSec = parseFloat(currentLapDuration.toFixed(2));
           recordedSplitsThisLapRef.current[idx] = splitSec;
           setLiveSplitTimes([...recordedSplitsThisLapRef.current]);
@@ -1424,62 +1435,37 @@ export default function App() {
         }
       });
 
-      // Franchissement de la ligne d'arrivée
       if (distanceCoveredInLapRef.current >= totalTrackLen) {
         const lapDuration = (now - lapStartTimeRef.current) / 1000;
         const avgSpd = Math.round((totalTrackLen / 1000) / (lapDuration / 3600));
-
         const completedLap: LapRecord = {
           id: `lap-${Date.now()}`,
           lap: currentLapRef.current,
           intermediateTimes: [...recordedSplitsThisLapRef.current],
           totalTime: lapDuration,
           avgSpeed: avgSpd,
-          driver: currentDriver,
-          stint: currentStint,
+          driver: currentDriverRef.current,
+          stint: currentStintRef.current,
           timestamp: new Date().toLocaleTimeString(),
         };
-
         setLapHistory((prev) => [completedLap, ...prev]);
-
-        setBestLapTime((prevBest) =>
-          prevBest === null || lapDuration < prevBest ? lapDuration : prevBest
-        );
-
+        setBestLapTime((prevBest) => prevBest === null || lapDuration < prevBest ? lapDuration : prevBest);
         currentLapRef.current += 1;
         setCurrentLap(currentLapRef.current);
-
-        distanceCoveredInLapRef.current = distanceCoveredInLapRef.current % totalTrackLen;
+        distanceCoveredInLapRef.current %= totalTrackLen;
         lapStartTimeRef.current = now;
-        recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
-        setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
-
+        recordedSplitsThisLapRef.current = new Array(intermediates.length).fill(null);
+        setLiveSplitTimes(new Array(intermediates.length).fill(null));
         showToast(`🏁 Tour #${completedLap.lap} bouclé en ${formatSec(lapDuration)} (Moy: ${avgSpd} km/h)`);
       }
 
-      // Mise à jour de la position du Solex
       const pos = getPositionFromDistance(distanceCoveredInLapRef.current);
       lastKnownPosRef.current = pos;
-      if (solexMarkerRef.current) {
-        solexMarkerRef.current.setLatLng(pos);
-      }
+      if (solexMarkerRef.current) solexMarkerRef.current.setLatLng(pos);
     }, 100);
 
     return () => clearInterval(interval);
-  }, [
-    standDataSource,
-    isEditingTrack,
-    isSimRunning,
-    currentCircuit,
-    trackMetrics,
-    sortedIntermediates,
-    targetSpeed,
-    simStopped,
-    simInPitStop,
-    simSignalLost,
-    currentDriver,
-    currentStint,
-  ]);
+  }, [standDataSource, isEditingTrack, selectedCircuitId]);
 
   // ============================================================================
   // CONTRÔLES SIMULATION & CIRCUITS
