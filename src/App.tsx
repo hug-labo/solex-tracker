@@ -1696,11 +1696,12 @@ export default function App() {
                   <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                     {sortedIntermediates.map((inter, idx) => {
                       const split = liveSplitTimes[idx];
+                      const hasSplit = typeof split === 'number';
                       return (
                         <div key={inter.id} style={{ flex: 1, minWidth: '60px', background: '#1e293b', padding: '4px 6px', borderRadius: '4px', textAlign: 'center' }}>
                           <div style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 'bold' }}>{inter.name}</div>
-                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: split !== null ? '#4ade80' : '#64748b' }}>
-                            {split !== null ? `${split.toFixed(1)}s` : '--.-'}
+                          <div style={{ fontSize: '11px', fontFamily: 'monospace', color: hasSplit ? '#4ade80' : '#64748b' }}>
+                            {hasSplit ? `${split.toFixed(1)}s` : '--.-'}
                           </div>
                         </div>
                       );
