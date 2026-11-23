@@ -297,6 +297,12 @@ function buildSqlExport(teamId: string, laps: LapRecord[], pitStops: PitStopReco
 // ============================================================================
 // COMPOSANT PRINCIPAL APP
 // ============================================================================
+// ============================================================================
+// COMPOSANT PRINCIPAL APP
+// ============================================================================
+// ============================================================================
+// COMPOSANT PRINCIPAL APP
+// ============================================================================
 export default function App() {
   // Navigation principale de rôle
   const [viewRole, setViewRole] = useState<'stand' | 'solex' | 'circuit'>('stand');
@@ -323,11 +329,9 @@ export default function App() {
   // Mode de données pour les stands : 'live' (GPS réel via WebSocket) ou 'simulation' (virtuel)
   const [standDataSource, setStandDataSource] = useState<'live' | 'simulation'>('simulation');
 
-  // Identifiant d'équipe et URL du serveur WebSocket
-  const [teamId, setTeamId] = useState<string>(() => {
-    return localStorage.getItem('solex_team_id') || 'equipe-1';
-  });
-
+  // État WebSocket Serveur Relais (pour communication réelle entre le Solex et les Stands)
+  const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
+  const [wsPacketsCount, setWsPacketsCount] = useState<number>(0);
   const [serverWsUrl, setServerWsUrl] = useState<string>(() => {
     if (typeof window !== 'undefined') {
       const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -335,72 +339,45 @@ export default function App() {
     }
     return 'ws://localhost:3000';
   });
+  const [teamId, setTeamId] = useState<string>('solex-7');
 
-  // Statut WebSocket
-  const [isWsConnected, setIsWsConnected] = useState<boolean>(false);
-  const [wsPacketsCount, setWsPacketsCount] = useState<number>(0);
-  const wsRef = useRef<WebSocket | null>(null);
-
-  // Vue carte (satellite, plan, nuit)
-  const [mapLayerType, setMapLayerType] = useState<'satellite' | 'streets' | 'dark'>('satellite');
-
-  // Recherche de lieu
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [isSearching, setIsSearching] = useState<boolean>(false);
-
-  // Pilotes et Relais (Endurance)
-  const [drivers, setDrivers] = useState<string[]>(['Pilote 1', 'Pilote 2', 'Pilote 3']);
-  const [currentDriver, setCurrentDriver] = useState<string>('Pilote 1');
-  const [currentStint, setCurrentStint] = useState<number>(1);
-  const [showDriverModal, setShowDriverModal] = useState<boolean>(false);
-  const [newDriverInput, setNewDriverInput] = useState<string>('');
-
-  // Télémétrie en direct
+  // Télémétrie & Chronométrage
   const [speed, setSpeed] = useState<number>(0);
   const [currentLap, setCurrentLap] = useState<number>(1);
   const [currentLapTime, setCurrentLapTime] = useState<number>(0);
   const [bestLapTime, setBestLapTime] = useState<number | null>(null);
-  const [liveSplitTimes, setLiveSplitTimes] = useState<(number | null)[]>([]);
-  const [lapHistory, setLapHistory] = useState<LapRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('solex_laps_v8');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
+  const [lapHistory, setLapHistory] = useState<LapRecord[]>([]);
+  const [pitHistory, setPitHistory] = useState<PitStopRecord[]>([]);
 
-  // Gestion des alertes
+  // Pilotes & Relais
+  const [currentDriver, setCurrentDriver] = useState<string>('Pilote 1');
+  const [currentStint, setCurrentStint] = useState<number>(1);
+  const [driversList, setDriversList] = useState<string[]>(['Pilote 1', 'Pilote 2', 'Pilote 3']);
+  const [showDriverModal, setShowDriverModal] = useState<boolean>(false);
+  const [filterDriver, setFilterDriver] = useState<string>('all');
+
+  // Alertes de course
   const [alertStopped, setAlertStopped] = useState<boolean>(false);
   const [stopElapsedSeconds, setStopElapsedSeconds] = useState<number>(0);
   const [alertSignalLost, setAlertSignalLost] = useState<boolean>(false);
   const [signalLostElapsedSeconds, setSignalLostElapsedSeconds] = useState<number>(0);
-
-  // Stands et arrêts
   const [inPitsState, setInPitsState] = useState<boolean>(false);
   const [pitTimerSeconds, setPitTimerSeconds] = useState<number>(0);
-  const [pitHistory, setPitHistory] = useState<PitStopRecord[]>(() => {
-    try {
-      const saved = localStorage.getItem('solex_pitstops_v8');
-      return saved ? JSON.parse(saved) : [];
-    } catch {
-      return [];
-    }
-  });
 
-  // Modal Export SQL / JSON
-  const [showExportModal, setShowExportModal] = useState<boolean>(false);
-  const [exportSqlText, setExportSqlText] = useState<string>('');
+  // Carte & Édition
+  const [mapLayerType, setMapLayerType] = useState<'satellite' | 'streets' | 'dark'>('satellite');
+  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [isSearching, setIsSearching] = useState<boolean>(false);
 
-  // Mode Édition de circuit
+  // Édition & Création de circuit
   const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
   const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
-  const [isPlacingMenuOpen, setIsPlacingMenuOpen] = useState<boolean>(false);
   const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate' | 'pitEntry' | 'pitExit'>('none');
   const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
 
   // Contrôles de simulation
+  const [isSimRunning, setIsSimRunning] = useState<boolean>(true);
   const [targetSpeed, setTargetSpeed] = useState<number>(85);
   const [simStopped, setSimStopped] = useState<boolean>(false);
   const [simInPitStop, setSimInPitStop] = useState<boolean>(false);
@@ -408,6 +385,10 @@ export default function App() {
 
   // Onglet inférieur des stands
   const [activeTab, setActiveTab] = useState<'laps' | 'pitstops' | 'driverStats'>('laps');
+
+  // Export de données
+  const [showExportModal, setShowExportModal] = useState<boolean>(false);
+  const [exportSqlText, setExportSqlText] = useState<string>('');
 
   // ============================================================================
   // ÉTAT SPÉCIFIQUE AU MODE SOLEX EMBARQUÉ (SMARTPHONE AU GUIDON)
@@ -428,96 +409,103 @@ export default function App() {
   // Refs pour Leaflet et boucle de calcul
   const mapContainerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
-  const solexMarkerRef = useRef<L.Marker | null>(null);
+  const tileLayerRef = useRef<L.TileLayer | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
   const pitPolylineRef = useRef<L.Polyline | null>(null);
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
-  const tileLayerRef = useRef<L.TileLayer | null>(null);
+  const solexMarkerRef = useRef<L.Marker | null>(null);
 
+  // Progression & Chronométrage
   const lastKnownPosRef = useRef<[number, number]>(currentCircuit.points[0] || [47.95, 0.2]);
   const distanceCoveredInLapRef = useRef<number>(0);
   const lastTickTimeRef = useRef<number>(Date.now());
   const lapStartTimeRef = useRef<number>(Date.now());
-  const recordedSplitsThisLapRef = useRef<(number | null)[]>([]);
+  const currentLapRef = useRef<number>(1);
   const stopDurationRef = useRef<number>(0);
   const signalLostDurationRef = useRef<number>(0);
   const pitDurationRef = useRef<number>(0);
-  const lastTelemetryTimeRef = useRef<number>(Date.now());
 
-  // Sauvegardes locales automatiques
+  // Sauvegarde persistante des circuits
   useEffect(() => {
     try {
       localStorage.setItem('solex_circuits_v8', JSON.stringify(circuits));
-    } catch {}
+    } catch (e) {
+      console.error(e);
+    }
   }, [circuits]);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('solex_team_id', teamId);
-    } catch {}
-  }, [teamId]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('solex_laps_v8', JSON.stringify(lapHistory));
-    } catch {}
-  }, [lapHistory]);
-
-  useEffect(() => {
-    try {
-      localStorage.setItem('solex_pitstops_v8', JSON.stringify(pitHistory));
-    } catch {}
-  }, [pitHistory]);
-
+  // Toast temporaire
   const showToast = (msg: string) => {
     setNotificationMsg(msg);
     setTimeout(() => {
-      setNotificationMsg(null);
+      setNotificationMsg((m) => (m === msg ? null : m));
     }, 4000);
   };
 
+  // Métriques géométriques du circuit en cours
   const trackMetrics = useMemo(() => {
     const pts = currentCircuit.points;
-    if (pts.length < 2) return { totalDistance: 1000, cumDistances: [0] };
-
+    if (pts.length < 2) {
+      return { totalDistanceMeters: 0, cumDistances: [0] };
+    }
     const cum: number[] = [0];
     let total = 0;
     for (let i = 0; i < pts.length; i++) {
-      const nextIndex = (i + 1) % pts.length;
-      const d = calculateDistanceMeters(pts[i], pts[nextIndex]);
+      const nextIdx = (i + 1) % pts.length;
+      const d = calculateDistanceMeters(pts[i], pts[nextIdx]);
       total += d;
       cum.push(total);
     }
-    return {
-      totalDistance: total,
-      cumDistances: cum,
-    };
+    return { totalDistanceMeters: total, cumDistances: cum };
   }, [currentCircuit]);
 
+  // Balises intermédiaires triées par distance croissante
   const sortedIntermediates = useMemo(() => {
     const list = currentCircuit.intermediates ? [...currentCircuit.intermediates] : [];
-    list.sort((a, b) => a.distance - b.distance);
-    return list.map((item, idx) => ({
-      ...item,
-      name: `S${idx + 1}`,
-    }));
+    return list.sort((a, b) => a.distance - b.distance);
   }, [currentCircuit.intermediates]);
 
+  // Calcul de la distance totale du tracé en cours de création
+  const drawnDistanceMeters = useMemo(() => {
+    if (editTrackPoints.length < 2) return 0;
+    let total = 0;
+    for (let i = 0; i < editTrackPoints.length - 1; i++) {
+      total += calculateDistanceMeters(editTrackPoints[i], editTrackPoints[i + 1]);
+    }
+    return Math.round(total);
+  }, [editTrackPoints]);
+
+  const [liveSplitTimes, setLiveSplitTimes] = useState<(number | null)[]>(() =>
+    new Array(sortedIntermediates.length).fill(null)
+  );
+  const recordedSplitsThisLapRef = useRef<(number | null)[]>(
+    new Array(sortedIntermediates.length).fill(null)
+  );
+
+  useEffect(() => {
+    setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
+    recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
+  }, [sortedIntermediates.length, selectedCircuitId]);
+
+  // Calcul de position à partir d'une distance sur le circuit
   const getPositionFromDistance = (dist: number): [number, number] => {
     const pts = currentCircuit.points;
     if (pts.length < 2) return pts[0] || [47.95, 0.2];
+    const total = trackMetrics.totalDistanceMeters;
+    if (total <= 0) return pts[0];
 
-    const total = trackMetrics.totalDistance;
     const normalizedDist = ((dist % total) + total) % total;
+    const cum = trackMetrics.cumDistances;
 
     for (let i = 0; i < pts.length; i++) {
-      const nextIndex = (i + 1) % pts.length;
-      const segDist = calculateDistanceMeters(pts[i], pts[nextIndex]);
-      const segStart = trackMetrics.cumDistances[i];
-      if (normalizedDist >= segStart && normalizedDist <= segStart + segDist) {
-        const progress = segDist > 0 ? (normalizedDist - segStart) / segDist : 0;
-        const lat = pts[i][0] + (pts[nextIndex][0] - pts[i][0]) * progress;
-        const lng = pts[i][1] + (pts[nextIndex][1] - pts[i][1]) * progress;
+      const segStart = cum[i];
+      const segEnd = cum[i + 1];
+      if (normalizedDist >= segStart && normalizedDist <= segEnd) {
+        const segLen = segEnd - segStart;
+        const t = segLen > 0 ? (normalizedDist - segStart) / segLen : 0;
+        const nextIdx = (i + 1) % pts.length;
+        const lat = pts[i][0] + (pts[nextIdx][0] - pts[i][0]) * t;
+        const lng = pts[i][1] + (pts[nextIdx][1] - pts[i][1]) * t;
         return [lat, lng];
       }
     }
@@ -525,24 +513,22 @@ export default function App() {
   };
 
   // ============================================================================
-  // CONNEXION WEBSOCKET CLIENT (RELAIS SERVEUR RENDER)
+  // WEBSOCKET TEMPS RÉEL (RELAIS SERVEUR RENDER)
   // ============================================================================
   useEffect(() => {
-    let active = true;
+    let ws: WebSocket | null = null;
     let reconnectTimeout: any = null;
+    let active = true;
 
-    const connectWs = () => {
+    const connect = () => {
       try {
-        if (!serverWsUrl) return;
-        const ws = new WebSocket(serverWsUrl);
-        wsRef.current = ws;
+        ws = new WebSocket(serverWsUrl);
 
         ws.onopen = () => {
           if (!active) return;
           setIsWsConnected(true);
           console.log('[WebSocket] Connecté au serveur relais');
-          // Enregistrer notre rôle et notre équipe
-          ws.send(
+          ws?.send(
             JSON.stringify({
               type: 'register',
               role: viewRole === 'solex' ? 'solex' : 'stand',
@@ -550,11 +536,9 @@ export default function App() {
             })
           );
 
-          // Vider le tampon hors-ligne si des points étaient en attente
           if (offlineQueueRef.current.length > 0) {
-            console.log(`[WebSocket] Envoi de ${offlineQueueRef.current.length} points hors-ligne...`);
             offlineQueueRef.current.forEach((pkt) => {
-              ws.send(JSON.stringify({ type: 'telemetry', ...pkt }));
+              ws?.send(JSON.stringify({ type: 'telemetry', ...pkt }));
             });
             offlineQueueRef.current = [];
           }
@@ -566,200 +550,108 @@ export default function App() {
             const data = JSON.parse(event.data);
             setWsPacketsCount((c) => c + 1);
 
-            // Réception de télémétrie en direct pour les Stands
             if (data.type === 'telemetry' && standDataSource === 'live') {
-              lastTelemetryTimeRef.current = Date.now();
-              setAlertSignalLost(false);
-              setSignalLostElapsedSeconds(0);
-
-              const lat = Number(data.lat);
-              const lng = Number(data.lng);
-              const spd = Number(data.speed || 0);
-              const heading = data.heading;
-
-              setSpeed(spd);
+              const { lat, lng, speed: spd, timestamp } = data;
+              setSpeed(Math.round(spd || 0));
               lastKnownPosRef.current = [lat, lng];
 
-              // Mise à jour marqueur Solex sur la carte
               if (solexMarkerRef.current) {
                 solexMarkerRef.current.setLatLng([lat, lng]);
-                solexMarkerRef.current.setIcon(createSolexIcon(heading));
               }
 
-              // Projection sur le circuit pour les chronos
               if (currentCircuit.points.length >= 2) {
                 const proj = projectPointOnTrack([lat, lng], currentCircuit.points, trackMetrics.cumDistances);
-                const prevDist = distanceCoveredInLapRef.current;
                 const newDist = proj.distance;
-                const totalDist = trackMetrics.totalDistance;
-
-                // Vérification zone des stands
                 const inPits = isDistanceInPits(newDist, currentCircuit.pitEntryDistance, currentCircuit.pitExitDistance);
                 setInPitsState(inPits);
-
-                // Arrêt en piste si vitesse < 3 km/h hors stands
-                if (spd < 3 && !inPits) {
-                  stopDurationRef.current += 1;
-                  setStopElapsedSeconds(stopDurationRef.current);
-                  if (stopDurationRef.current >= 10) {
-                    setAlertStopped(true);
-                  }
-                } else {
-                  setAlertStopped(false);
-                  stopDurationRef.current = 0;
-                  setStopElapsedSeconds(0);
-                }
-
-                // Détection franchissement de la ligne d'arrivée
-                // Si la distance passe de >85% à <15% du tour, le tour est bouclé
-                if (prevDist > totalDist * 0.85 && newDist < totalDist * 0.15) {
-                  const now = Date.now();
-                  const lapTime = (now - lapStartTimeRef.current) / 1000;
-                  if (lapTime > 15) { // Éviter faux déclenchement rebond
-                    const avgSpd = Math.round((totalDist / lapTime) * 3.6);
-                    const newRecord: LapRecord = {
-                      id: `lap-${Date.now()}`,
-                      teamId,
-                      lap: currentLap,
-                      intermediateTimes: [...recordedSplitsThisLapRef.current],
-                      totalTime: lapTime,
-                      avgSpeed: avgSpd,
-                      driver: currentDriver,
-                      stint: currentStint,
-                      timestamp: new Date().toLocaleTimeString(),
-                    };
-                    setLapHistory((prev) => [newRecord, ...prev]);
-                    setBestLapTime((prev) => (prev === null || lapTime < prev ? lapTime : prev));
-                    setCurrentLap((l) => l + 1);
-                    lapStartTimeRef.current = now;
-                    recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
-                    setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
-                    showToast(`🏁 Tour #${currentLap} bouclé en ${formatSec(lapTime)} (${avgSpd} km/h) !`);
-                  }
-                }
-
-                // Détection des secteurs
-                sortedIntermediates.forEach((inter, idx) => {
-                  if (
-                    prevDist < inter.distance &&
-                    newDist >= inter.distance &&
-                    recordedSplitsThisLapRef.current[idx] === null
-                  ) {
-                    const elapsed = (Date.now() - lapStartTimeRef.current) / 1000;
-                    recordedSplitsThisLapRef.current[idx] = elapsed;
-                    setLiveSplitTimes([...recordedSplitsThisLapRef.current]);
-                  }
-                });
-
-                distanceCoveredInLapRef.current = newDist;
               }
             }
           } catch (e) {
-            console.error('[WebSocket] Erreur décodage message :', e);
+            console.error('[WebSocket] Erreur décodage message', e);
           }
         };
 
         ws.onclose = () => {
           if (!active) return;
           setIsWsConnected(false);
-          console.warn('[WebSocket] Déconnecté, reconnexion dans 4s...');
-          reconnectTimeout = setTimeout(connectWs, 4000);
+          reconnectTimeout = setTimeout(connect, 3000);
         };
 
-        ws.onerror = () => {
-          ws.close();
+        ws.onerror = (err) => {
+          console.warn('[WebSocket] Avertissement connexion', err);
         };
-      } catch (err) {
-        if (active) reconnectTimeout = setTimeout(connectWs, 4000);
+      } catch (e) {
+        console.error('[WebSocket] Erreur init', e);
+        reconnectTimeout = setTimeout(connect, 3000);
       }
     };
 
-    connectWs();
+    connect();
 
     return () => {
       active = false;
       if (reconnectTimeout) clearTimeout(reconnectTimeout);
-      if (wsRef.current) wsRef.current.close();
+      if (ws) ws.close();
     };
-  }, [serverWsUrl, teamId, viewRole, standDataSource, currentCircuit, trackMetrics, sortedIntermediates, currentLap, currentDriver, currentStint]);
-
-  // Surveillance de perte de signal en mode direct (alerte orange)
-  useEffect(() => {
-    if (standDataSource !== 'live') return;
-
-    const interval = setInterval(() => {
-      const now = Date.now();
-      const diffSec = Math.floor((now - lastTelemetryTimeRef.current) / 1000);
-      if (diffSec >= 15) {
-        setAlertSignalLost(true);
-        setSignalLostElapsedSeconds(diffSec);
-      } else {
-        setAlertSignalLost(false);
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
-  }, [standDataSource]);
+  }, [serverWsUrl, teamId, viewRole, standDataSource, currentCircuit, trackMetrics, sortedIntermediates]);
 
   // ============================================================================
-  // ÉMETTEUR GPS EMBARQUÉ (POUR LE SMARTPHONE DU SOLEX)
+  // ÉMISSION TÉLÉMÉTRIE SOLEX EMBARQUÉ
   // ============================================================================
+  const sendTelemetryPacket = (lat: number, lng: number, spd: number, heading?: number | null, acc?: number | null) => {
+    const pkt: TelemetryPacket = {
+      teamId,
+      lat,
+      lng,
+      speed: spd,
+      heading,
+      accuracy: acc,
+      timestamp: Date.now(),
+    };
+
+    setGpsPacketsSent((c) => c + 1);
+    setLastGpsFixTime(new Date().toLocaleTimeString());
+    setGpsSpeed(Math.round(spd));
+    setGpsAccuracy(acc ? Math.round(acc) : null);
+    setGpsHeading(heading || null);
+
+    fetch('/api/telemetry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(pkt),
+    }).catch(() => {
+      offlineQueueRef.current.push(pkt);
+    });
+  };
+
   const startGpsTransmission = async () => {
-    // 1. Activer le Wake Lock pour empêcher l'écran de s'éteindre
-    if ('wakeLock' in navigator) {
-      try {
-        wakeLockSentinelRef.current = await (navigator as any).wakeLock.request('screen');
-        setWakeLockActive(true);
-      } catch (err) {
-        console.warn('Wake Lock non supporté ou refusé', err);
-      }
-    }
-
-    if (!('geolocation' in navigator)) {
+    if (!navigator.geolocation) {
       alert("La géolocalisation GPS n'est pas supportée par ce navigateur.");
       return;
     }
 
+    try {
+      if ('wakeLock' in navigator) {
+        wakeLockSentinelRef.current = await (navigator as any).wakeLock.request('screen');
+        setWakeLockActive(true);
+      }
+    } catch (e) {
+      console.warn('WakeLock indisponible', e);
+    }
+
     setIsGpsTransmitting(true);
-    showToast('📡 Émission GPS démarrée ! Les données sont transmises au relais.');
+    showToast('🚀 Transmission GPS lancée !');
 
-    // 2. Démarrer la capture GPS haute fréquence (10 Hz ou max possible)
-    gpsWatchIdRef.current = navigator.geolocation.watchPosition(
+    const watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        const lat = pos.coords.latitude;
-        const lng = pos.coords.longitude;
-        const spd = pos.coords.speed !== null && pos.coords.speed !== undefined ? Math.round(pos.coords.speed * 3.6) : 0;
-        const heading = pos.coords.heading;
-        const accuracy = Math.round(pos.coords.accuracy);
-        const altitude = pos.coords.altitude !== null ? Math.round(pos.coords.altitude) : null;
-
-        setGpsSpeed(spd);
-        setGpsAccuracy(accuracy);
-        setGpsHeading(heading);
-        setGpsAltitude(altitude);
-        setLastGpsFixTime(new Date().toLocaleTimeString());
-        setGpsPacketsSent((c) => c + 1);
-
-        const packet: TelemetryPacket = {
-          teamId,
-          lat,
-          lng,
-          speed: spd,
-          heading,
-          accuracy,
-          timestamp: Date.now(),
-        };
-
-        // Envoi au WebSocket s'il est connecté, sinon mise en mémoire tampon locale
-        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-          wsRef.current.send(JSON.stringify({ type: 'telemetry', ...packet }));
-        } else {
-          offlineQueueRef.current.push(packet);
-          if (offlineQueueRef.current.length > 200) offlineQueueRef.current.shift();
-        }
+        const { latitude, longitude, speed: spd, heading, accuracy, altitude } = pos.coords;
+        const kmh = spd !== null && spd !== undefined ? spd * 3.6 : 0;
+        setGpsAltitude(altitude ? Math.round(altitude) : null);
+        sendTelemetryPacket(latitude, longitude, kmh, heading, accuracy);
       },
       (err) => {
-        console.error('Erreur GPS :', err);
+        console.error('Erreur GPS', err);
+        showToast('⚠️ Erreur signal GPS : ' + err.message);
       },
       {
         enableHighAccuracy: true,
@@ -767,6 +659,8 @@ export default function App() {
         timeout: 5000,
       }
     );
+
+    gpsWatchIdRef.current = watchId;
   };
 
   const stopGpsTransmission = () => {
@@ -781,48 +675,35 @@ export default function App() {
     }
     setIsGpsTransmitting(false);
     setIsSimulatingPhoneGps(false);
-    showToast('🛑 Transmission GPS arrêtée.');
+    showToast('⏹️ Transmission GPS arrêtée.');
   };
 
-  // Simulation GPS embarqué (pour tester le téléphone sur un bureau sans bouger)
+  // Simulation GPS embarqué
   useEffect(() => {
     if (!isSimulatingPhoneGps) return;
+    let curDist = 0;
+    const pts = currentCircuit.points;
+    if (pts.length < 2) return;
 
-    let simIndex = 0;
     const interval = setInterval(() => {
-      const pos = getPositionFromDistance(simIndex);
-      simIndex = (simIndex + 25) % trackMetrics.totalDistance;
+      curDist += (85 * 1000 / 3600) * 0.5;
+      const total = trackMetrics.totalDistanceMeters;
+      if (total <= 0) return;
+      const norm = curDist % total;
 
-      const spd = 75 + Math.round(Math.random() * 15);
-      setGpsSpeed(spd);
-      setGpsAccuracy(3);
-      setGpsHeading(90);
-      setLastGpsFixTime(new Date().toLocaleTimeString());
-      setGpsPacketsSent((c) => c + 1);
-
-      const packet: TelemetryPacket = {
-        teamId,
-        lat: pos[0],
-        lng: pos[1],
-        speed: spd,
-        heading: 90,
-        accuracy: 3,
-        timestamp: Date.now(),
-      };
-
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(JSON.stringify({ type: 'telemetry', ...packet }));
-      }
-    }, 1000);
+      const pos = getPositionFromDistance(norm);
+      sendTelemetryPacket(pos[0], pos[1], 85, 90, 3.5);
+    }, 500);
 
     return () => clearInterval(interval);
   }, [isSimulatingPhoneGps, trackMetrics, teamId]);
 
   // ============================================================================
-  // CARTE LEAFLET & COUCHES
+  // GESTION CARTE LEAFLET
   // ============================================================================
   useEffect(() => {
-    if (!mapContainerRef.current || mapRef.current) return;
+    if (!mapContainerRef.current) return;
+    if (mapRef.current) return;
 
     const initialCenter = currentCircuit.points[0] || [47.95, 0.205];
     const map = L.map(mapContainerRef.current).setView(initialCenter, 16);
@@ -834,7 +715,11 @@ export default function App() {
     satLayer.addTo(map);
     tileLayerRef.current = satLayer;
 
-    const polyline = L.polyline(currentCircuit.points, {
+    const closedPoints = currentCircuit.points.length > 2
+      ? [...currentCircuit.points, currentCircuit.points[0]]
+      : currentCircuit.points;
+
+    const polyline = L.polyline(closedPoints, {
       color: '#ef4444',
       weight: 5,
       opacity: 0.9,
@@ -863,6 +748,15 @@ export default function App() {
     };
   }, []);
 
+  // Invalider la taille de la carte lors du changement d'onglet
+  useEffect(() => {
+    if (mapRef.current) {
+      setTimeout(() => {
+        mapRef.current?.invalidateSize();
+      }, 100);
+    }
+  }, [viewRole]);
+
   // Changement de fond de carte
   useEffect(() => {
     if (!mapRef.current || !tileLayerRef.current) return;
@@ -886,10 +780,38 @@ export default function App() {
 
   // Mise à jour visuelle du circuit et des balises
   useEffect(() => {
-    if (!mapRef.current || isEditingTrack) return;
+    if (!mapRef.current) return;
 
+    if (isEditingTrack) {
+      if (polylineRef.current) {
+        polylineRef.current.setStyle({ color: '#f59e0b', weight: 4, dashArray: '4, 6' });
+        polylineRef.current.setLatLngs(editTrackPoints);
+      }
+      if (pitPolylineRef.current) {
+        pitPolylineRef.current.setLatLngs([]);
+      }
+      if (markersGroupRef.current) {
+        markersGroupRef.current.clearLayers();
+        editTrackPoints.forEach((pt, idx) => {
+          L.circleMarker(pt, {
+            radius: idx === 0 ? 8 : 5,
+            color: idx === 0 ? '#10b981' : '#f59e0b',
+            fillColor: idx === 0 ? '#10b981' : '#fbbf24',
+            fillOpacity: 0.9,
+            weight: 2,
+          }).addTo(markersGroupRef.current!);
+        });
+      }
+      return;
+    }
+
+    // Hors mode tracé
     if (polylineRef.current) {
-      polylineRef.current.setLatLngs(currentCircuit.points);
+      polylineRef.current.setStyle({ color: '#ef4444', weight: 5, dashArray: undefined });
+      const closedPoints = currentCircuit.points.length > 2
+        ? [...currentCircuit.points, currentCircuit.points[0]]
+        : currentCircuit.points;
+      polylineRef.current.setLatLngs(closedPoints);
     }
 
     if (pitPolylineRef.current) {
@@ -930,7 +852,7 @@ export default function App() {
         }).addTo(markersGroupRef.current);
       }
     }
-  }, [currentCircuit, sortedIntermediates, isEditingTrack]);
+  }, [currentCircuit, sortedIntermediates, isEditingTrack, editTrackPoints]);
 
   // Clic sur la carte en mode édition ou placement
   useEffect(() => {
@@ -940,11 +862,13 @@ export default function App() {
     const handleClick = (e: L.LeafletMouseEvent) => {
       const clickPos: [number, number] = [e.latlng.lat, e.latlng.lng];
 
+      // Cas 1 : Tracé direct d'un nouveau circuit
       if (isEditingTrack) {
         setEditTrackPoints((prev) => [...prev, clickPos]);
         return;
       }
 
+      // Cas 2 : Repositionner la ligne de départ / arrivée
       if (placementMode === 'startLine') {
         const reanchored = reanchorTrackToStartPoint(currentCircuit.points, clickPos, trackMetrics.cumDistances);
         const updated = circuits.map((c) => (c.id === currentCircuit.id ? { ...c, points: reanchored } : c));
@@ -954,6 +878,7 @@ export default function App() {
         return;
       }
 
+      // Cas 3 : Ajouter une balise intermédiaire S1, S2...
       if (placementMode === 'intermediate') {
         const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
         const newInter: IntermediatePoint = {
@@ -972,6 +897,7 @@ export default function App() {
         return;
       }
 
+      // Cas 4 : Positionner l'entrée des stands
       if (placementMode === 'pitEntry') {
         const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
         const updated = circuits.map((c) =>
@@ -985,6 +911,7 @@ export default function App() {
         return;
       }
 
+      // Cas 5 : Positionner la sortie des stands
       if (placementMode === 'pitExit') {
         const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
         const updated = circuits.map((c) =>
@@ -1005,12 +932,6 @@ export default function App() {
     };
   }, [isEditingTrack, placementMode, currentCircuit, trackMetrics, circuits]);
 
-  // Synchronisation de la polyline pendant le tracé
-  useEffect(() => {
-    if (!isEditingTrack || !polylineRef.current) return;
-    polylineRef.current.setLatLngs(editTrackPoints);
-  }, [editTrackPoints, isEditingTrack]);
-
   // ============================================================================
   // BOUCLE DE SIMULATION (QUAND LE MODE SIMULATION EST CHOISI AUX STANDS)
   // ============================================================================
@@ -1023,6 +944,12 @@ export default function App() {
     setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
 
     const interval = setInterval(() => {
+      // Si la simulation est mise en pause ou arrêtée par l'utilisateur
+      if (!isSimRunning) {
+        setSpeed(0);
+        return;
+      }
+
       const now = Date.now();
       const dt = (now - lastTickTimeRef.current) / 1000;
       lastTickTimeRef.current = now;
@@ -1059,143 +986,279 @@ export default function App() {
         return;
       }
 
-      // 4. Arrêt en piste
+      // 4. Panne en piste simulée
       if (simStopped) {
         setSpeed(0);
         if (!currentlyInPits) {
           stopDurationRef.current += dt;
-          const totalStopSec = Math.floor(stopDurationRef.current);
-          setStopElapsedSeconds(totalStopSec);
-          if (stopDurationRef.current >= 5) setAlertStopped(true);
+          const stoppedSec = Math.floor(stopDurationRef.current);
+          setStopElapsedSeconds(stoppedSec);
+          if (stopDurationRef.current >= 10) {
+            setAlertStopped(true);
+          }
         }
         return;
+      } else {
+        stopDurationRef.current = 0;
+        setStopElapsedSeconds(0);
+        setAlertStopped(false);
       }
 
-      // Course normale
-      const currentSimSpeed = targetSpeed;
+      // 5. Progression normale en piste
+      const currentSimSpeed = currentlyInPits ? 25 : targetSpeed;
       setSpeed(currentSimSpeed);
 
-      const distMoved = (currentSimSpeed / 3.6) * dt;
-      const newLapDist = distanceCoveredInLapRef.current + distMoved;
-      const totalTrackDist = trackMetrics.totalDistance;
+      const distanceCoveredInInterval = (currentSimSpeed * 1000 / 3600) * dt;
+      distanceCoveredInLapRef.current += distanceCoveredInInterval;
 
-      const lapTimeElapsed = (now - lapStartTimeRef.current) / 1000;
-      setCurrentLapTime(lapTimeElapsed);
+      const totalTrackLen = trackMetrics.totalDistanceMeters;
+      if (totalTrackLen <= 0) return;
 
-      // Balises intermédiaires
+      const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
+      setCurrentLapTime(currentLapDuration);
+
+      // Franchissement des balises intermédiaires
       sortedIntermediates.forEach((inter, idx) => {
         if (
-          distanceCoveredInLapRef.current < inter.distance &&
-          newLapDist >= inter.distance &&
-          recordedSplitsThisLapRef.current[idx] === null
+          recordedSplitsThisLapRef.current[idx] === null &&
+          distanceCoveredInLapRef.current >= inter.distance
         ) {
-          recordedSplitsThisLapRef.current[idx] = lapTimeElapsed;
+          const splitSec = parseFloat(currentLapDuration.toFixed(2));
+          recordedSplitsThisLapRef.current[idx] = splitSec;
           setLiveSplitTimes([...recordedSplitsThisLapRef.current]);
+          showToast(`⚡ Balise ${inter.name} franchie : ${splitSec.toFixed(1)}s`);
         }
       });
 
-      // Tour complet
-      if (newLapDist >= totalTrackDist) {
-        const totalLapTime = lapTimeElapsed;
-        const avgSpd = Math.round((totalTrackDist / totalLapTime) * 3.6);
+      // Franchissement de la ligne d'arrivée
+      if (distanceCoveredInLapRef.current >= totalTrackLen) {
+        const lapDuration = (now - lapStartTimeRef.current) / 1000;
+        const avgSpd = Math.round((totalTrackLen / 1000) / (lapDuration / 3600));
 
-        const newRecord: LapRecord = {
-          id: `sim-lap-${Date.now()}`,
-          teamId,
-          lap: currentLap,
+        const completedLap: LapRecord = {
+          id: `lap-${Date.now()}`,
+          lap: currentLapRef.current,
           intermediateTimes: [...recordedSplitsThisLapRef.current],
-          totalTime: totalLapTime,
+          totalTime: lapDuration,
           avgSpeed: avgSpd,
           driver: currentDriver,
           stint: currentStint,
           timestamp: new Date().toLocaleTimeString(),
         };
 
-        setLapHistory((prev) => [newRecord, ...prev]);
-        setBestLapTime((prev) => (prev === null || totalLapTime < prev ? totalLapTime : prev));
-        setCurrentLap((l) => l + 1);
+        setLapHistory((prev) => [completedLap, ...prev]);
 
+        setBestLapTime((prevBest) =>
+          prevBest === null || lapDuration < prevBest ? lapDuration : prevBest
+        );
+
+        currentLapRef.current += 1;
+        setCurrentLap(currentLapRef.current);
+
+        distanceCoveredInLapRef.current = distanceCoveredInLapRef.current % totalTrackLen;
         lapStartTimeRef.current = now;
-        distanceCoveredInLapRef.current = newLapDist - totalTrackDist;
         recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
         setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
-      } else {
-        distanceCoveredInLapRef.current = newLapDist;
+
+        showToast(`🏁 Tour #${completedLap.lap} bouclé en ${formatSec(lapDuration)} (Moy: ${avgSpd} km/h)`);
       }
 
-      const newPos = getPositionFromDistance(distanceCoveredInLapRef.current);
-      lastKnownPosRef.current = newPos;
+      // Mise à jour de la position du Solex
+      const pos = getPositionFromDistance(distanceCoveredInLapRef.current);
+      lastKnownPosRef.current = pos;
       if (solexMarkerRef.current) {
-        solexMarkerRef.current.setLatLng(newPos);
+        solexMarkerRef.current.setLatLng(pos);
       }
     }, 100);
 
     return () => clearInterval(interval);
-  }, [standDataSource, isEditingTrack, currentCircuit, trackMetrics, sortedIntermediates, targetSpeed, simStopped, simInPitStop, simSignalLost, currentLap, currentDriver, currentStint, teamId]);
+  }, [
+    standDataSource,
+    isEditingTrack,
+    isSimRunning,
+    currentCircuit,
+    trackMetrics,
+    sortedIntermediates,
+    targetSpeed,
+    simStopped,
+    simInPitStop,
+    simSignalLost,
+    currentDriver,
+    currentStint,
+  ]);
 
-  // Actions stands et relais
-  const handleStartPitStop = () => {
-    if (currentCircuit.pitEntryDistance !== undefined) {
-      distanceCoveredInLapRef.current = currentCircuit.pitEntryDistance;
-      const pitPos = getPositionFromDistance(currentCircuit.pitEntryDistance);
-      lastKnownPosRef.current = pitPos;
-      if (solexMarkerRef.current) solexMarkerRef.current.setLatLng(pitPos);
+  // ============================================================================
+  // CONTRÔLES SIMULATION & CIRCUITS
+  // ============================================================================
+  const handleToggleSimulation = () => {
+    setIsSimRunning((prev) => {
+      const next = !prev;
+      if (next) {
+        lastTickTimeRef.current = Date.now();
+        showToast('▶️ Simulation démarrée');
+      } else {
+        setSpeed(0);
+        showToast('⏸️ Simulation arrêtée / en pause');
+      }
+      return next;
+    });
+  };
+
+  const handleResetSimulation = () => {
+    distanceCoveredInLapRef.current = 0;
+    lapStartTimeRef.current = Date.now();
+    lastTickTimeRef.current = Date.now();
+    currentLapRef.current = 1;
+    setCurrentLap(1);
+    setCurrentLapTime(0);
+    setBestLapTime(null);
+    setLapHistory([]);
+    setPitHistory([]);
+    setLiveSplitTimes(new Array(sortedIntermediates.length).fill(null));
+    recordedSplitsThisLapRef.current = new Array(sortedIntermediates.length).fill(null);
+    setSpeed(0);
+    setSimStopped(false);
+    setSimInPitStop(false);
+    setSimSignalLost(false);
+    setAlertStopped(false);
+    setAlertSignalLost(false);
+    setInPitsState(false);
+    stopDurationRef.current = 0;
+    signalLostDurationRef.current = 0;
+    pitDurationRef.current = 0;
+    if (currentCircuit.points[0]) {
+      lastKnownPosRef.current = currentCircuit.points[0];
+      if (solexMarkerRef.current) {
+        solexMarkerRef.current.setLatLng(currentCircuit.points[0]);
+      }
     }
+    showToast('🔄 Course réinitialisée au départ du Tour 1 !');
+  };
+
+  const handleStartCreateCircuit = () => {
+    setIsEditingTrack(true);
+    setViewRole('circuit');
+    setNewCircuitName(`Circuit ${circuits.length + 1}`);
+    setEditTrackPoints([]);
+    setPlacementMode('none');
+    showToast('✏️ Cliquez sur la carte pour déposer les points de votre nouveau circuit.');
+  };
+
+  const handleSaveCircuit = () => {
+    if (editTrackPoints.length < 3) {
+      alert('Veuillez cliquer au moins 3 points sur la carte pour délimiter le circuit.');
+      return;
+    }
+
+    const finalName = newCircuitName.trim() || `Circuit ${circuits.length + 1}`;
+    const newCircuit: SavedCircuit = {
+      id: `circuit-${Date.now()}`,
+      name: finalName,
+      points: editTrackPoints,
+      intermediates: [],
+    };
+
+    const updated = [...circuits, newCircuit];
+    setCircuits(updated);
+    try {
+      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+    setSelectedCircuitId(newCircuit.id);
+    setIsEditingTrack(false);
+    setEditTrackPoints([]);
+    handleResetSimulation();
+    showToast(`🎉 Circuit "${finalName}" enregistré ! Le 1er point cliqué est la ligne de départ.`);
+  };
+
+  const handleCancelCreateCircuit = () => {
+    setIsEditingTrack(false);
+    setEditTrackPoints([]);
+    showToast('Création de circuit annulée.');
+  };
+
+  const handleUndoLastPoint = () => {
+    setEditTrackPoints((prev) => prev.slice(0, -1));
+  };
+
+  const handleDeleteCircuit = (circuitId: string) => {
+    if (circuits.length <= 1) {
+      alert('Impossible de supprimer le seul circuit restant.');
+      return;
+    }
+    const toDelete = circuits.find((c) => c.id === circuitId);
+    if (!window.confirm(`Confirmez-vous la suppression du circuit "${toDelete?.name}" ?`)) {
+      return;
+    }
+    const updated = circuits.filter((c) => c.id !== circuitId);
+    setCircuits(updated);
+    try {
+      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+    if (selectedCircuitId === circuitId) {
+      setSelectedCircuitId(updated[0].id);
+    }
+    showToast('Circuit supprimé.');
+  };
+
+  const handleDeleteIntermediate = (interId: string) => {
+    const updatedIntermediates = (currentCircuit.intermediates || []).filter((i) => i.id !== interId);
+    const updated = circuits.map((c) =>
+      c.id === currentCircuit.id ? { ...c, intermediates: updatedIntermediates } : c
+    );
+    setCircuits(updated);
+    try {
+      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+    showToast('Balise intermédiaire supprimée.');
+  };
+
+  const handleResetPits = () => {
+    const updated = circuits.map((c) =>
+      c.id === currentCircuit.id
+        ? { ...c, pitEntryDistance: undefined, pitExitDistance: undefined, pitEntryLatLng: undefined, pitExitLatLng: undefined }
+        : c
+    );
+    setCircuits(updated);
+    try {
+      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
+    showToast("Repères d'entrée et sortie des stands réinitialisés.");
+  };
+
+  const handleStartPitStop = () => {
     setSimInPitStop(true);
     pitDurationRef.current = 0;
     setPitTimerSeconds(0);
-    showToast('⛽ Entrée au stand : chronomètre de ravitaillement démarré !');
+    showToast('⛽ Entrée aux stands effectuée !');
   };
 
   const handleExitPitStop = () => {
     const record: PitStopRecord = {
       id: `pit-${Date.now()}`,
-      teamId,
       lap: currentLap,
       driver: currentDriver,
       stint: currentStint,
-      duration: pitTimerSeconds,
+      duration: Math.round(pitDurationRef.current),
       timestamp: new Date().toLocaleTimeString(),
     };
     setPitHistory((prev) => [record, ...prev]);
-
-    if (currentCircuit.pitExitDistance !== undefined) {
-      distanceCoveredInLapRef.current = currentCircuit.pitExitDistance;
-      const exitPos = getPositionFromDistance(currentCircuit.pitExitDistance);
-      lastKnownPosRef.current = exitPos;
-      if (solexMarkerRef.current) solexMarkerRef.current.setLatLng(exitPos);
-    }
-
     setSimInPitStop(false);
-    lastTickTimeRef.current = Date.now();
-    showToast(`🏁 Sortie des stands enregistrée : ${pitTimerSeconds}s d'arrêt.`);
     pitDurationRef.current = 0;
     setPitTimerSeconds(0);
-  };
-
-  const handleChangeDriver = (newDriver: string) => {
-    if (newDriver === currentDriver) return;
-    setCurrentDriver(newDriver);
-    setCurrentStint((s) => s + 1);
-    setShowDriverModal(false);
-    showToast(`👤 Changement de pilote : ${newDriver} prend le guidon (Relais #${currentStint + 1}) !`);
-  };
-
-  const handleAddNewDriver = () => {
-    const trimmed = newDriverInput.trim();
-    if (!trimmed) return;
-    if (drivers.includes(trimmed)) {
-      alert('Ce pilote existe déjà.');
-      return;
-    }
-    setDrivers([...drivers, trimmed]);
-    setNewDriverInput('');
-    handleChangeDriver(trimmed);
+    showToast(`🏁 Sortie des stands après ${record.duration}s d'arrêt !`);
   };
 
   const handleSearchLocation = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!searchQuery.trim() || !mapRef.current) return;
+    if (!searchQuery.trim()) return;
     setIsSearching(true);
     try {
       const resp = await fetch(
@@ -1205,25 +1268,26 @@ export default function App() {
       if (data && data.length > 0) {
         const lat = parseFloat(data[0].lat);
         const lon = parseFloat(data[0].lon);
-        mapRef.current.setView([lat, lon], 16);
-        showToast(`📍 Carte centrée sur : ${data[0].display_name.split(',')[0]}`);
+        if (mapRef.current) {
+          mapRef.current.flyTo([lat, lon], 16, { duration: 1.5 });
+          showToast(`📍 Vue déplacée sur : ${data[0].display_name.split(',')[0]}`);
+        }
       } else {
-        alert('Lieu non trouvé.');
+        alert('Lieu introuvable.');
       }
-    } catch {
-      alert('Erreur lors de la recherche.');
+    } catch (err) {
+      console.error('Erreur recherche', err);
     } finally {
       setIsSearching(false);
     }
   };
 
   const handleRecenterSolex = () => {
-    if (mapRef.current && lastKnownPosRef.current) {
-      mapRef.current.setView(lastKnownPosRef.current, 17);
+    if (mapRef.current) {
+      mapRef.current.panTo(lastKnownPosRef.current, { animate: true });
     }
   };
 
-  // Gestion export SQL
   const handleOpenExportModal = () => {
     const sql = buildSqlExport(teamId, lapHistory, pitHistory, currentCircuit);
     setExportSqlText(sql);
@@ -1235,10 +1299,9 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `solex_tracking_${teamId}.sql`);
-    document.body.appendChild(link);
+    link.download = `solex_export_${teamId}_${Date.now()}.sql`;
     link.click();
-    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleDownloadJson = () => {
@@ -1246,44 +1309,70 @@ export default function App() {
       teamId,
       circuit: currentCircuit,
       laps: lapHistory,
-      pitStops: pitHistory,
+      pitstops: pitHistory,
       exportedAt: new Date().toISOString(),
     };
     const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', `solex_tracking_${teamId}.json`);
-    document.body.appendChild(link);
+    link.download = `solex_telemetry_${teamId}_${Date.now()}.json`;
     link.click();
-    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
-  // Statistiques pilotes
-  const driverStats = useMemo(() => {
-    return drivers.map((d) => {
-      const laps = lapHistory.filter((l) => l.driver === d);
-      const totalLaps = laps.length;
-      const best = totalLaps > 0 ? Math.min(...laps.map((l) => l.totalTime)) : null;
-      const avg = totalLaps > 0 ? laps.reduce((acc, l) => acc + l.totalTime, 0) / totalLaps : null;
-      return { driver: d, totalLaps, bestTime: best, avgTime: avg };
-    });
-  }, [drivers, lapHistory]);
+  const formatSec = (sec: number | null) => {
+    if (sec === null || isNaN(sec)) return '--:--.-';
+    const m = Math.floor(sec / 60);
+    const s = Math.floor(sec % 60);
+    const ms = Math.floor((sec % 1) * 10);
+    return `${m}:${s < 10 ? '0' : ''}${s}.${ms}`;
+  };
 
+  const filteredLapHistory = useMemo(() => {
+    if (filterDriver === 'all') return lapHistory;
+    return lapHistory.filter((l) => l.driver === filterDriver);
+  }, [lapHistory, filterDriver]);
+
+  const driverStats = useMemo(() => {
+    const stats: Record<string, { laps: number; bestLap: number | null; totalTime: number }> = {};
+    lapHistory.forEach((l) => {
+      if (!stats[l.driver]) {
+        stats[l.driver] = { laps: 0, bestLap: null, totalTime: 0 };
+      }
+      stats[l.driver].laps += 1;
+      stats[l.driver].totalTime += l.totalTime;
+      if (stats[l.driver].bestLap === null || l.totalTime < stats[l.driver].bestLap!) {
+        stats[l.driver].bestLap = l.totalTime;
+      }
+    });
+    return Object.entries(stats).map(([driver, data]) => ({
+      driver,
+      ...data,
+      avgLap: data.laps > 0 ? data.totalTime / data.laps : 0,
+    }));
+  }, [lapHistory]);
+
+  // ============================================================================
+  // RENDU INTERFACE UTILISATEUR
+  // ============================================================================
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: '10px', gap: '8px', boxSizing: 'border-box', background: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif' }}>
-      
-      {/* ==================================================================== */}
-      {/* BARRE DE NAVIGATION PRINCIPALE (SÉLECTION DU RÔLE) */}
-      {/* ==================================================================== */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#1e293b', padding: '6px 12px', borderRadius: '8px', border: '1px solid #334155', flexWrap: 'wrap', gap: '8px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '16px', fontWeight: 'bold', color: '#38bdf8' }}>🛵 SOLEX TRACKING</span>
-          <span style={{ fontSize: '11px', background: '#334155', padding: '2px 6px', borderRadius: '4px', color: '#94a3b8' }}>v2.0 Finale</span>
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100vh', width: '100vw', background: '#0f172a', color: '#f8fafc', fontFamily: 'sans-serif', overflow: 'hidden' }}>
+
+      {/* EN-TÊTE SUPÉRIEUR & SÉLECTEUR DE RÔLE */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#020617', padding: '8px 16px', borderBottom: '1px solid #1e293b', flexShrink: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <span style={{ fontSize: '20px' }}>🛵</span>
+          <div>
+            <h1 style={{ margin: 0, fontSize: '15px', fontWeight: 'bold', color: '#38bdf8' }}>
+              SOLEX LIVE TRACKING
+            </h1>
+            <div style={{ fontSize: '10px', color: '#64748b' }}>Endurance & Chronos Temps Réel</div>
+          </div>
         </div>
 
-        {/* Sélecteur de rôle */}
-        <div style={{ display: 'flex', gap: '4px', background: '#0f172a', padding: '3px', borderRadius: '6px' }}>
+        {/* ONGLETS DES RÔLES */}
+        <div style={{ display: 'flex', gap: '4px', background: '#1e293b', padding: '3px', borderRadius: '6px' }}>
           <button
             onClick={() => setViewRole('stand')}
             style={{
@@ -1297,7 +1386,7 @@ export default function App() {
               color: viewRole === 'stand' ? 'white' : '#94a3b8',
             }}
           >
-            🏁 Stands & Chronos
+            📊 Stands (Télémétrie)
           </button>
           <button
             onClick={() => setViewRole('solex')}
@@ -1331,7 +1420,7 @@ export default function App() {
           </button>
         </div>
 
-        {/* Statut de liaison serveur relais */}
+        {/* Statut serveur relais */}
         <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px' }}>
           <span style={{ display: 'inline-block', width: '8px', height: '8px', borderRadius: '50%', background: isWsConnected ? '#22c55e' : '#ef4444' }} />
           <span style={{ color: isWsConnected ? '#86efac' : '#fca5a5' }}>
@@ -1341,9 +1430,9 @@ export default function App() {
         </div>
       </div>
 
-      {/* Notifications Toast */}
+      {/* Toast de notification */}
       {notificationMsg && (
-        <div style={{ backgroundColor: '#059669', color: 'white', padding: '8px 14px', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', boxShadow: '0 4px 10px rgba(0,0,0,0.4)' }}>
+        <div style={{ backgroundColor: '#059669', color: 'white', padding: '8px 14px', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', boxShadow: '0 4px 10px rgba(0,0,0,0.4)', margin: '4px 16px 0 16px', zIndex: 1000 }}>
           {notificationMsg}
         </div>
       )}
@@ -1352,13 +1441,12 @@ export default function App() {
       {/* VUE 1 : SOLEX EMBARQUÉ (SMARTPHONE AU GUIDON) */}
       {/* ==================================================================== */}
       {viewRole === 'solex' && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: '#020617', borderRadius: '10px', border: '2px solid #16a34a', overflowY: 'auto' }}>
-          
+        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: '#020617', overflowY: 'auto' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
             <div>
               <h2 style={{ margin: 0, fontSize: '18px', color: '#4ade80' }}>📱 Émetteur Télémétrie Embarqué</h2>
               <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>
-                Fixez ce téléphone sur le guidon du Solex et lancez l'émission.
+                Fixez ce smartphone sur le guidon du Solex et lancez l'émission GPS live.
               </p>
             </div>
 
@@ -1373,73 +1461,51 @@ export default function App() {
             </div>
           </div>
 
-          {/* GROS BOUTON DÉMARRER / ARRÊTER */}
-          <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+          {/* Vitesse géante lisible sur guidon */}
+          <div style={{ background: '#0f172a', border: '2px solid #22c55e', borderRadius: '12px', padding: '24px', textAlign: 'center' }}>
+            <div style={{ fontSize: '14px', color: '#94a3b8', letterSpacing: '1px' }}>VITESSE GPS INSTANTANÉE</div>
+            <div style={{ fontSize: '72px', fontWeight: '900', color: gpsSpeed > 90 ? '#f87171' : '#4ade80', fontFamily: 'monospace' }}>
+              {gpsSpeed}
+            </div>
+            <div style={{ fontSize: '16px', color: '#64748b' }}>km / h</div>
+          </div>
+
+          {/* Commandes d'émission GPS */}
+          <div style={{ display: 'flex', gap: '10px' }}>
             {!isGpsTransmitting ? (
               <button
                 onClick={startGpsTransmission}
-                style={{
-                  flex: 1,
-                  padding: '18px',
-                  background: '#16a34a',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  fontSize: '18px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  boxShadow: '0 0 20px rgba(22,163,74,0.6)',
-                }}
+                style={{ flex: 1, padding: '14px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
               >
-                🟢 DÉMARRER LA TRANSMISSION GPS
+                ▶️ Démarrer l'Émission GPS
               </button>
             ) : (
               <button
                 onClick={stopGpsTransmission}
-                style={{
-                  flex: 1,
-                  padding: '18px',
-                  background: '#dc2626',
-                  color: 'white',
-                  border: 'none',
-                  borderRadius: '10px',
-                  fontSize: '18px',
-                  fontWeight: 'bold',
-                  cursor: 'pointer',
-                  boxShadow: '0 0 20px rgba(220,38,38,0.6)',
-                }}
+                style={{ flex: 1, padding: '14px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
               >
-                🔴 ARRÊTER L'ÉMISSION
+                ⏹️ Arrêter l'Émission GPS
               </button>
             )}
 
             <button
               onClick={() => setIsSimulatingPhoneGps((v) => !v)}
               style={{
-                padding: '0 16px',
+                padding: '14px 18px',
                 background: isSimulatingPhoneGps ? '#eab308' : '#334155',
                 color: isSimulatingPhoneGps ? '#0f172a' : 'white',
                 border: 'none',
-                borderRadius: '10px',
-                fontSize: '12px',
-                fontWeight: 'bold',
+                borderRadius: '8px',
                 cursor: 'pointer',
+                fontWeight: 'bold',
+                fontSize: '13px',
               }}
             >
               {isSimulatingPhoneGps ? '🎮 Simu GPS Active' : '🎮 Test GPS Simulé'}
             </button>
           </div>
 
-          {/* AFFICHAGE GÉANT DE LA VITESSE (Lisible à 100 km/h) */}
-          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#0f172a', padding: '24px', borderRadius: '12px', border: '2px solid #334155' }}>
-            <span style={{ fontSize: '13px', color: '#94a3b8', letterSpacing: '1px' }}>VITESSE INSTANTANÉE GPS</span>
-            <div style={{ fontSize: '72px', fontWeight: '900', color: gpsSpeed > 90 ? '#f87171' : '#38bdf8', lineHeight: 1.1 }}>
-              {gpsSpeed}
-            </div>
-            <span style={{ fontSize: '18px', fontWeight: 'bold', color: '#94a3b8' }}>KM / H</span>
-          </div>
-
-          {/* CADRANS D'ÉTAT DU TÉLÉPHONE */}
+          {/* Cadrans d'état du téléphone */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
             <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
               <div style={{ fontSize: '11px', color: '#94a3b8' }}>PRÉCISION GPS</div>
@@ -1469,114 +1535,126 @@ export default function App() {
               </div>
             </div>
           </div>
-
-          <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #1e293b', fontSize: '12px', color: '#94a3b8' }}>
-            💡 <strong>Conseil Endurance :</strong> Branchez le smartphone à une batterie externe (powerbank) étanche fixée au cadre pour tenir les relais de 12h ou 24h sans coupure.
-          </div>
         </div>
       )}
 
       {/* ==================================================================== */}
-      {/* VUE 2 & 3 : STANDS OU ÉDITEUR CIRCUIT */}
+      {/* VUE 2 & 3 : STANDS ET ÉDITEUR CIRCUIT (CARTE COMMUNE TOUJOURS MONTÉE) */}
       {/* ==================================================================== */}
-      {viewRole !== 'solex' && (
-        <>
-          {/* ALERTES STANDS */}
-          {alertStopped && (
-            <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', border: '2px solid #fecaca', boxShadow: '0 0 15px rgba(220,38,38,0.7)' }}>
-              🚨 ALERTE STANDS : SOLEX IMMOBILISÉ EN PISTE DEPUIS {stopElapsedSeconds}s ! (Hors zone de stands)
-            </div>
-          )}
+      <div style={{ flex: 1, display: viewRole === 'solex' ? 'none' : 'flex', flexDirection: 'column', gap: '8px', padding: '8px 16px', minHeight: 0 }}>
 
-          {alertSignalLost && (
-            <div style={{ backgroundColor: '#ea580c', color: 'white', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', border: '2px solid #fed7aa', boxShadow: '0 0 15px rgba(234,88,12,0.7)' }}>
-              📡 ALERTE STANDS : PERTE DE SIGNAL TÉLÉMÉTRIE DEPUIS {signalLostElapsedSeconds}s !
-            </div>
-          )}
+        {/* ALERTES STANDS */}
+        {alertStopped && (
+          <div style={{ backgroundColor: '#dc2626', color: 'white', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', border: '2px solid #fecaca', boxShadow: '0 0 15px rgba(220,38,38,0.7)' }}>
+            🚨 ALERTE STANDS : SOLEX IMMOBILISÉ EN PISTE DEPUIS {stopElapsedSeconds}s ! (Hors zone de stands)
+          </div>
+        )}
 
-          {(inPitsState || simInPitStop) && (
-            <div style={{ backgroundColor: '#1d4ed8', color: 'white', padding: '8px 12px', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}>
-              <span>⛽ SOLEX ACTUELLEMENT AUX STANDS</span>
-              <span style={{ background: '#3b82f6', padding: '3px 8px', borderRadius: '4px' }}>
-                ⏱️ Temps d'arrêt : <strong>{pitTimerSeconds}s</strong>
-              </span>
-              <span>👤 {currentDriver} (Relais #{currentStint})</span>
-              {simInPitStop && (
-                <button
-                  onClick={handleExitPitStop}
-                  style={{ background: '#10b981', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
-                >
-                  🏁 Sortir des stands & reprendre la piste
-                </button>
-              )}
-            </div>
-          )}
+        {alertSignalLost && (
+          <div style={{ backgroundColor: '#ea580c', color: 'white', padding: '10px 14px', borderRadius: '8px', textAlign: 'center', fontWeight: 'bold', fontSize: '15px', border: '2px solid #fed7aa', boxShadow: '0 0 15px rgba(234,88,12,0.7)' }}>
+            📡 ALERTE STANDS : PERTE DE SIGNAL TÉLÉMÉTRIE DEPUIS {signalLostElapsedSeconds}s !
+          </div>
+        )}
 
-          {/* BARRE D'OUTILS STANDS & CIRCUIT */}
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1e293b', padding: '8px 12px', borderRadius: '8px' }}>
-            
-            {/* Bascule Direct / Simulation pour les stands */}
-            {viewRole === 'stand' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px 6px', borderRadius: '6px', border: '1px solid #334155' }}>
-                <span style={{ fontSize: '11px', color: '#94a3b8' }}>Source :</span>
-                <button
-                  onClick={() => setStandDataSource('live')}
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: '11px',
-                    fontWeight: 'bold',
-                    borderRadius: '4px',
-                    border: 'none',
-                    cursor: 'pointer',
-                    background: standDataSource === 'live' ? '#16a34a' : 'transparent',
-                    color: standDataSource === 'live' ? 'white' : '#94a3b8',
-                  }}
-                >
-                  📡 Direct (GPS Réel)
-                </button>
-                <button
-                  onClick={() => setStandDataSource('simulation')}
-                  style={{
-                    padding: '4px 8px',
-                    fontSize: '11px',
-                    fontWeight: 'bold',
-                    borderRadius: '4px',
-                    border: 'none',
-                    cursor: 'pointer',
-                    background: standDataSource === 'simulation' ? '#2563eb' : 'transparent',
-                    color: standDataSource === 'simulation' ? 'white' : '#94a3b8',
-                  }}
-                >
-                  🎮 Démo (Simulation)
-                </button>
-              </div>
-            )}
-
-            {/* Choix du circuit */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Circuit :</span>
-              <select
-                value={selectedCircuitId}
-                onChange={(e) => {
-                  setSelectedCircuitId(e.target.value);
-                  setLapHistory([]);
-                  setCurrentLap(1);
-                  setBestLapTime(null);
-                  setPlacementMode('none');
-                  setIsPlacingMenuOpen(false);
-                }}
-                disabled={isEditingTrack}
-                style={{ padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
+        {(inPitsState || simInPitStop) && (
+          <div style={{ backgroundColor: '#1d4ed8', color: 'white', padding: '8px 12px', borderRadius: '6px', textAlign: 'center', fontWeight: 'bold', fontSize: '13px', display: 'flex', justifyContent: 'center', alignItems: 'center', gap: '12px' }}>
+            <span>⛽ SOLEX ACTUELLEMENT AUX STANDS</span>
+            <span style={{ background: '#3b82f6', padding: '3px 8px', borderRadius: '4px' }}>
+              ⏱️ Temps d'arrêt : <strong>{pitTimerSeconds}s</strong>
+            </span>
+            <span>👤 {currentDriver} (Relais #{currentStint})</span>
+            {simInPitStop && (
+              <button
+                onClick={handleExitPitStop}
+                style={{ background: '#10b981', color: 'white', border: 'none', padding: '4px 10px', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
               >
-                {circuits.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-              </select>
-            </div>
+                🏁 Sortir des stands & reprendre la piste
+              </button>
+            )}
+          </div>
+        )}
 
-            {/* Pilote en cours */}
+        {/* BARRE D'OUTILS PRINCIPALE */}
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center', background: '#1e293b', padding: '8px 12px', borderRadius: '8px' }}>
+
+          {/* Sélecteur source de données (uniquement en vue Stands) */}
+          {viewRole === 'stand' && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px 6px', borderRadius: '6px', border: '1px solid #334155' }}>
+              <span style={{ fontSize: '11px', color: '#94a3b8' }}>Source :</span>
+              <button
+                onClick={() => setStandDataSource('live')}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  borderRadius: '4px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: standDataSource === 'live' ? '#16a34a' : 'transparent',
+                  color: standDataSource === 'live' ? 'white' : '#94a3b8',
+                }}
+              >
+                📡 Direct (GPS Réel)
+              </button>
+              <button
+                onClick={() => setStandDataSource('simulation')}
+                style={{
+                  padding: '4px 8px',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  borderRadius: '4px',
+                  border: 'none',
+                  cursor: 'pointer',
+                  background: standDataSource === 'simulation' ? '#2563eb' : 'transparent',
+                  color: standDataSource === 'simulation' ? 'white' : '#94a3b8',
+                }}
+              >
+                🎮 Démo (Simulation)
+              </button>
+            </div>
+          )}
+
+          {/* Choix du circuit + BOUTON NOUVEAU CIRCUIT */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '12px', color: '#94a3b8' }}>Circuit :</span>
+            <select
+              value={selectedCircuitId}
+              onChange={(e) => {
+                setSelectedCircuitId(e.target.value);
+                handleResetSimulation();
+                setPlacementMode('none');
+              }}
+              disabled={isEditingTrack}
+              style={{ padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
+            >
+              {circuits.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+
+            {/* BOUTON CRÉER UN CIRCUIT */}
+            <button
+              onClick={handleStartCreateCircuit}
+              style={{
+                padding: '5px 10px',
+                background: '#10b981',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+              }}
+              title="Tracer un nouveau circuit au clic sur la carte"
+            >
+              ➕ Nouveau Circuit
+            </button>
+          </div>
+
+          {/* Pilote en cours */}
+          {viewRole === 'stand' && (
             <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '4px 8px', borderRadius: '6px', border: '1px solid #334155' }}>
               <span style={{ fontSize: '11px', color: '#94a3b8' }}>Au guidon :</span>
               <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>{currentDriver}</span>
@@ -1588,74 +1666,478 @@ export default function App() {
                 🔄 Relais
               </button>
             </div>
+          )}
 
-            {/* Fond de carte */}
-            <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px 6px', borderRadius: '6px', border: '1px solid #334155' }}>
-              <button
-                onClick={() => setMapLayerType('satellite')}
-                style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'satellite' ? '#2563eb' : 'transparent', color: mapLayerType === 'satellite' ? 'white' : '#94a3b8' }}
-              >
-                🛰️ Sat
-              </button>
-              <button
-                onClick={() => setMapLayerType('streets')}
-                style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'streets' ? '#2563eb' : 'transparent', color: mapLayerType === 'streets' ? 'white' : '#94a3b8' }}
-              >
-                🗺️ Plan
-              </button>
-              <button
-                onClick={() => setMapLayerType('dark')}
-                style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'dark' ? '#2563eb' : 'transparent', color: mapLayerType === 'dark' ? 'white' : '#94a3b8' }}
-              >
-                🌙 Nuit
-              </button>
-            </div>
-
-            {/* Recherche de lieu */}
-            <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '4px', flex: '1', minWidth: '140px' }}>
-              <input
-                type="text"
-                placeholder="Chercher un lieu..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                style={{ flex: 1, padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
-              />
-              <button type="submit" disabled={isSearching} style={{ padding: '5px 8px', background: '#475569', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
-                {isSearching ? '...' : '🔍'}
-              </button>
-            </form>
-
-            <button onClick={handleRecenterSolex} style={{ padding: '5px 8px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
-              🎯 Centrer
-            </button>
-
-            {/* Bouton Export SQL */}
+          {/* Fond de carte */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '4px', background: '#0f172a', padding: '3px 6px', borderRadius: '6px', border: '1px solid #334155' }}>
             <button
-              onClick={handleOpenExportModal}
-              style={{ padding: '5px 10px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+              onClick={() => setMapLayerType('satellite')}
+              style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'satellite' ? '#2563eb' : 'transparent', color: mapLayerType === 'satellite' ? 'white' : '#94a3b8' }}
             >
-              💾 Données SQL
+              🛰️ Sat
+            </button>
+            <button
+              onClick={() => setMapLayerType('streets')}
+              style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'streets' ? '#2563eb' : 'transparent', color: mapLayerType === 'streets' ? 'white' : '#94a3b8' }}
+            >
+              🗺️ Plan
+            </button>
+            <button
+              onClick={() => setMapLayerType('dark')}
+              style={{ padding: '4px 6px', fontSize: '11px', fontWeight: 'bold', borderRadius: '4px', border: 'none', cursor: 'pointer', background: mapLayerType === 'dark' ? '#2563eb' : 'transparent', color: mapLayerType === 'dark' ? 'white' : '#94a3b8' }}
+            >
+              🌙 Nuit
             </button>
           </div>
 
-          {/* ZONE PRINCIPALE : CARTE + PANNEAU CHRONOS */}
-          <div style={{ display: 'flex', flex: 1, gap: '10px', minHeight: 0 }}>
-            
-            {/* CARTE LEAFLET */}
-            <div style={{ flex: 2, position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '1px solid #334155' }}>
-              <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+          {/* Recherche de lieu */}
+          <form onSubmit={handleSearchLocation} style={{ display: 'flex', gap: '4px', flex: '1', minWidth: '130px' }}>
+            <input
+              type="text"
+              placeholder="Chercher un lieu..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{ flex: 1, padding: '5px 8px', background: '#334155', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
+            />
+            <button type="submit" disabled={isSearching} style={{ padding: '5px 8px', background: '#475569', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
+              {isSearching ? '...' : '🔍'}
+            </button>
+          </form>
 
-              {/* Instructions de placement en cours */}
-              {placementMode !== 'none' && (
-                <div style={{ position: 'absolute', top: 10, left: '50%', transform: 'translateX(-50%)', background: '#f59e0b', color: '#0f172a', padding: '6px 14px', borderRadius: '6px', fontWeight: 'bold', fontSize: '12px', zIndex: 1000, boxShadow: '0 2px 8px rgba(0,0,0,0.5)' }}>
-                  👉 Cliquez sur la piste pour placer : {placementMode} (Échap pour annuler)
-                </div>
-              )}
+          <button onClick={handleRecenterSolex} style={{ padding: '5px 8px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}>
+            🎯 Centrer
+          </button>
+
+          {/* Export SQL */}
+          <button
+            onClick={handleOpenExportModal}
+            style={{ padding: '5px 10px', background: '#7c3aed', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 'bold' }}
+          >
+            💾 Données SQL
+          </button>
+        </div>
+
+        {/* BANDEAU DE CONTRÔLE DE SIMULATION COMPLET (ARRÊT / MARCHE / RESET / TESTS) */}
+        {viewRole === 'stand' && standDataSource === 'simulation' && (
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center', background: '#020617', padding: '8px 12px', borderRadius: '8px', border: '1px solid #1e293b', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>🎮 Simulation :</span>
+
+            {/* BOUTON ARRÊTER / DÉMARRER LA SIMULATION */}
+            <button
+              onClick={handleToggleSimulation}
+              style={{
+                padding: '6px 14px',
+                background: isSimRunning ? '#eab308' : '#16a34a',
+                color: isSimRunning ? '#0f172a' : 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+                boxShadow: '0 2px 6px rgba(0,0,0,0.4)',
+              }}
+            >
+              {isSimRunning ? '⏸️ Mettre en Pause / Arrêter' : '▶️ Démarrer la Simulation'}
+            </button>
+
+            {/* BOUTON RÉINITIALISER */}
+            <button
+              onClick={handleResetSimulation}
+              style={{
+                padding: '6px 12px',
+                background: '#475569',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+              }}
+              title="Remet le tour à 1, efface les chronos et replace le Solex sur la ligne de départ"
+            >
+              🔄 Remise à Zéro
+            </button>
+
+            {/* Vitesse cible */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', background: '#0f172a', padding: '3px 8px', borderRadius: '6px', border: '1px solid #334155' }}>
+              <span style={{ fontSize: '11px', color: '#94a3b8' }}>Vitesse cible :</span>
+              {[60, 85, 105].map((spd) => (
+                <button
+                  key={spd}
+                  onClick={() => setTargetSpeed(spd)}
+                  style={{
+                    padding: '2px 6px',
+                    fontSize: '11px',
+                    borderRadius: '4px',
+                    border: 'none',
+                    cursor: 'pointer',
+                    background: targetSpeed === spd ? '#2563eb' : '#334155',
+                    color: targetSpeed === spd ? 'white' : '#94a3b8',
+                    fontWeight: targetSpeed === spd ? 'bold' : 'normal',
+                  }}
+                >
+                  {spd} km/h
+                </button>
+              ))}
             </div>
 
-            {/* PANNEAU LATÉRAL STANDS */}
+            <div style={{ height: '16px', width: '1px', background: '#334155' }} />
+
+            {/* BOUTONS DE SCÉNARIOS D'INCIDENTS */}
+            <button
+              onClick={() => setSimStopped((s) => !s)}
+              style={{
+                padding: '5px 10px',
+                background: simStopped ? '#10b981' : '#dc2626',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '11px',
+                fontWeight: 'bold',
+              }}
+            >
+              {simStopped ? '▶️ Reprendre Piste' : '⚠️ Simuler Panne Piste'}
+            </button>
+
+            <button
+              onClick={handleStartPitStop}
+              disabled={simInPitStop}
+              style={{
+                padding: '5px 10px',
+                background: '#2563eb',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '11px',
+                fontWeight: 'bold',
+              }}
+            >
+              ⛽ Simuler Entrée Stand
+            </button>
+
+            <button
+              onClick={() => setSimSignalLost((v) => !v)}
+              style={{
+                padding: '5px 10px',
+                background: simSignalLost ? '#10b981' : '#ea580c',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '11px',
+                fontWeight: 'bold',
+              }}
+            >
+              {simSignalLost ? '▶️ Rétablir Signal 4G' : '📡 Simuler Coupure 4G'}
+            </button>
+          </div>
+        )}
+
+        {/* ZONE PRINCIPALE : CARTE + PANNEAU LATÉRAL (STANDS OU ÉDITEUR) */}
+        <div style={{ display: 'flex', flex: 1, gap: '10px', minHeight: 0 }}>
+
+          {/* CARTE LEAFLET COMMUNE */}
+          <div style={{ flex: 2, position: 'relative', borderRadius: '8px', overflow: 'hidden', border: '1px solid #334155' }}>
+            <div ref={mapContainerRef} style={{ width: '100%', height: '100%' }} />
+
+            {/* BANDEAU OVERLAY MODE TRACÉ EN COURS */}
+            {isEditingTrack && (
+              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: '#0f172a', border: '2px solid #f59e0b', color: 'white', padding: '8px 16px', borderRadius: '8px', zIndex: 1000, boxShadow: '0 4px 15px rgba(0,0,0,0.6)', display: 'flex', alignItems: 'center', gap: '12px' }}>
+                <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#f59e0b' }}>
+                  ✏️ Mode Tracé Actif :
+                </span>
+                <span style={{ fontSize: '12px', color: '#cbd5e1' }}>
+                  Cliquez sur la carte pour tracer le circuit (<strong>{editTrackPoints.length}</strong> pts - <strong>~{drawnDistanceMeters}m</strong>)
+                </span>
+              </div>
+            )}
+
+            {/* Instructions de placement au clic (Balises, départ, stands) */}
+            {placementMode !== 'none' && !isEditingTrack && (
+              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: '#f59e0b', color: '#0f172a', padding: '6px 14px', borderRadius: '6px', fontWeight: 'bold', fontSize: '12px', zIndex: 1000, boxShadow: '0 2px 8px rgba(0,0,0,0.5)' }}>
+                👉 Cliquez sur le tracé de la piste pour positionner : {placementMode}
+                <button
+                  onClick={() => setPlacementMode('none')}
+                  style={{ marginLeft: '10px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', fontSize: '10px' }}
+                >
+                  Annuler (Échap)
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* ==================================================================== */}
+          {/* PANNEAU LATÉRAL 1 : ÉDITEUR CIRCUIT (SI RÔLE ÉDITEUR) */}
+          {/* ==================================================================== */}
+          {viewRole === 'circuit' && (
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', background: '#1e293b', padding: '14px', borderRadius: '8px', border: '1px solid #f59e0b', minWidth: '320px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#f59e0b' }}>🛠️ Outils Éditeur Circuit</h3>
+                <span style={{ fontSize: '11px', background: '#0f172a', padding: '3px 8px', borderRadius: '4px', color: '#38bdf8' }}>
+                  {trackMetrics.totalDistanceMeters ? `${Math.round(trackMetrics.totalDistanceMeters)} m` : '0 m'}
+                </span>
+              </div>
+
+              {/* FORMULAIRE DE CRÉATION DE TRACÉ */}
+              {isEditingTrack ? (
+                <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '2px solid #f59e0b', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                  <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#fbbf24' }}>
+                    ✏️ Tracé du Nouveau Circuit
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Nom du circuit :</label>
+                    <input
+                      type="text"
+                      value={newCircuitName}
+                      onChange={(e) => setNewCircuitName(e.target.value)}
+                      placeholder="Nom du circuit..."
+                      style={{ width: '100%', padding: '6px 8px', background: '#1e293b', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px', boxSizing: 'border-box' }}
+                    />
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    Points déposés : <strong>{editTrackPoints.length}</strong> (~{drawnDistanceMeters} m)
+                  </div>
+
+                  <div style={{ display: 'flex', gap: '6px' }}>
+                    <button
+                      onClick={handleSaveCircuit}
+                      disabled={editTrackPoints.length < 3}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        background: editTrackPoints.length >= 3 ? '#10b981' : '#334155',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: editTrackPoints.length >= 3 ? 'pointer' : 'not-allowed',
+                        fontWeight: 'bold',
+                        fontSize: '12px',
+                      }}
+                    >
+                      💾 Enregistrer le Circuit
+                    </button>
+                    <button
+                      onClick={handleUndoLastPoint}
+                      disabled={editTrackPoints.length === 0}
+                      style={{ padding: '8px 10px', background: '#334155', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                      title="Retirer le dernier point cliqué"
+                    >
+                      ↩️
+                    </button>
+                    <button
+                      onClick={handleCancelCreateCircuit}
+                      style={{ padding: '8px 10px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+                      title="Annuler"
+                    >
+                      ❌
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <button
+                  onClick={handleStartCreateCircuit}
+                  style={{
+                    padding: '10px',
+                    background: '#10b981',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '13px',
+                    boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
+                  }}
+                >
+                  ➕ Tracer un Nouveau Circuit sur la carte
+                </button>
+              )}
+
+              {/* OUTILS DE POSITIONNEMENT SUR LE TRACÉ EXISTANT */}
+              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#e2e8f0' }}>
+                  Positionner au clic sur le circuit :
+                </div>
+
+                <button
+                  onClick={() => {
+                    setPlacementMode(placementMode === 'startLine' ? 'none' : 'startLine');
+                    showToast('Cliquez sur la piste pour repositionner la ligne de départ / arrivée.');
+                  }}
+                  style={{
+                    padding: '8px',
+                    background: placementMode === 'startLine' ? '#16a34a' : '#1e293b',
+                    color: 'white',
+                    border: '1px solid #16a34a',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    textAlign: 'left',
+                    fontWeight: 'bold',
+                  }}
+                >
+                  🏁 {placementMode === 'startLine' ? '👉 Cliquez sur la piste...' : 'Ligne Départ / Arrivée'}
+                </button>
+
+                <button
+                  onClick={() => {
+                    setPlacementMode(placementMode === 'intermediate' ? 'none' : 'intermediate');
+                    showToast('Cliquez sur la piste pour poser une balise secteur (S1, S2...).');
+                  }}
+                  style={{
+                    padding: '8px',
+                    background: placementMode === 'intermediate' ? '#f59e0b' : '#1e293b',
+                    color: placementMode === 'intermediate' ? '#0f172a' : 'white',
+                    border: '1px solid #f59e0b',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontSize: '12px',
+                    textAlign: 'left',
+                    fontWeight: 'bold',
+                  }}
+                >
+                  📍 {placementMode === 'intermediate' ? '👉 Cliquez sur la piste...' : '+ Ajouter Balise Secteur (S)'}
+                </button>
+
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    onClick={() => {
+                      setPlacementMode(placementMode === 'pitEntry' ? 'none' : 'pitEntry');
+                      showToast("Cliquez sur la piste pour positionner l'entrée des stands.");
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      background: placementMode === 'pitEntry' ? '#2563eb' : '#1e293b',
+                      color: 'white',
+                      border: '1px solid #2563eb',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    ⛽ Entrée Stands
+                  </button>
+
+                  <button
+                    onClick={() => {
+                      setPlacementMode(placementMode === 'pitExit' ? 'none' : 'pitExit');
+                      showToast('Cliquez sur la piste pour positionner la sortie des stands.');
+                    }}
+                    style={{
+                      flex: 1,
+                      padding: '8px',
+                      background: placementMode === 'pitExit' ? '#0284c7' : '#1e293b',
+                      color: 'white',
+                      border: '1px solid #0284c7',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                      fontWeight: 'bold',
+                    }}
+                  >
+                    🏁 Sortie Stands
+                  </button>
+                </div>
+              </div>
+
+              {/* LISTE DES BALISES DU CIRCUIT */}
+              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#e2e8f0', display: 'flex', justifyContent: 'space-between' }}>
+                  <span>Balises de chronométrage :</span>
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>{sortedIntermediates.length} balise(s)</span>
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#10b981', display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #1e293b' }}>
+                  <span>🏁 Départ / Arrivée</span>
+                  <span>0 m</span>
+                </div>
+
+                {sortedIntermediates.length === 0 ? (
+                  <div style={{ fontSize: '11px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
+                    Aucune balise intermédiaire. Cliquez sur "+ Ajouter Balise Secteur".
+                  </div>
+                ) : (
+                  sortedIntermediates.map((inter) => (
+                    <div key={inter.id} style={{ fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #1e293b' }}>
+                      <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>📍 {inter.name}</span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <span>{Math.round(inter.distance)} m</span>
+                        <button
+                          onClick={() => handleDeleteIntermediate(inter.id)}
+                          style={{ background: 'transparent', color: '#ef4444', border: 'none', cursor: 'pointer', fontSize: '12px' }}
+                          title="Supprimer cette balise"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  ))
+                )}
+
+                {/* Statut stands */}
+                <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #334155', fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ color: '#38bdf8' }}>
+                    ⛽ Stands : {currentCircuit.pitEntryDistance !== undefined && currentCircuit.pitExitDistance !== undefined ? `${Math.round(currentCircuit.pitEntryDistance)}m ➔ ${Math.round(currentCircuit.pitExitDistance)}m` : 'Non configurés'}
+                  </span>
+                  {(currentCircuit.pitEntryDistance !== undefined || currentCircuit.pitExitDistance !== undefined) && (
+                    <button
+                      onClick={handleResetPits}
+                      style={{ background: 'transparent', color: '#f87171', border: 'none', cursor: 'pointer', fontSize: '10px' }}
+                      title="Effacer les repères stands"
+                    >
+                      Effacer
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* Bouton de suppression du circuit & retour aux stands */}
+              <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <button
+                  onClick={() => setViewRole('stand')}
+                  style={{
+                    padding: '10px',
+                    background: '#2563eb',
+                    color: 'white',
+                    border: 'none',
+                    borderRadius: '6px',
+                    cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '12px',
+                  }}
+                >
+                  🏁 Retourner au Tableau des Stands
+                </button>
+
+                {circuits.length > 1 && (
+                  <button
+                    onClick={() => handleDeleteCircuit(currentCircuit.id)}
+                    style={{
+                      padding: '6px',
+                      background: 'transparent',
+                      color: '#ef4444',
+                      border: '1px solid #ef4444',
+                      borderRadius: '6px',
+                      cursor: 'pointer',
+                      fontSize: '11px',
+                    }}
+                  >
+                    🗑️ Supprimer ce circuit
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* ==================================================================== */}
+          {/* PANNEAU LATÉRAL 2 : STANDS (TÉLÉMÉTRIE, CADRANS & CHRONOS) */}
+          {/* ==================================================================== */}
+          {viewRole === 'stand' && (
             <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', background: '#1e293b', padding: '10px', borderRadius: '8px', border: '1px solid #334155', minWidth: '310px' }}>
-              
+
               {/* CADRANS VITESSE & TOUR */}
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                 <div style={{ background: '#0f172a', padding: '10px', borderRadius: '6px', textAlign: 'center', border: '1px solid #334155' }}>
@@ -1710,77 +2192,20 @@ export default function App() {
                 </div>
               )}
 
-              {/* BOUTONS D'ARRÊT & TESTS (SIMULATION) */}
-              {standDataSource === 'simulation' && (
-                <div style={{ display: 'flex', gap: '4px', background: '#0f172a', padding: '6px', borderRadius: '6px', border: '1px solid #334155', flexWrap: 'wrap' }}>
-                  <button
-                    onClick={() => setSimStopped((s) => !s)}
-                    style={{
-                      flex: 1,
-                      padding: '5px',
-                      background: simStopped ? '#10b981' : '#dc2626',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    {simStopped ? '▶️ Reprendre' : '⚠️ Panne Piste'}
-                  </button>
-
-                  <button
-                    onClick={handleStartPitStop}
-                    disabled={simInPitStop}
-                    style={{
-                      flex: 1,
-                      padding: '5px',
-                      background: '#2563eb',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    ⛽ Entrée Stand
-                  </button>
-
-                  <button
-                    onClick={() => setSimSignalLost((v) => !v)}
-                    style={{
-                      flex: 1,
-                      padding: '5px',
-                      background: simSignalLost ? '#10b981' : '#ea580c',
-                      color: 'white',
-                      border: 'none',
-                      borderRadius: '4px',
-                      cursor: 'pointer',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    {simSignalLost ? '📶 Signal OK' : '📡 Coupure 4G'}
-                  </button>
-                </div>
-              )}
-
-              {/* ONGLETS HISTORIQUE & STATS */}
+              {/* ONGLETS HISTORIQUE DES TOURS, STANDS ET STATS PILOTES */}
               <div style={{ display: 'flex', borderBottom: '1px solid #334155', marginTop: '4px' }}>
                 <button
                   onClick={() => setActiveTab('laps')}
                   style={{
                     flex: 1,
                     padding: '6px',
-                    fontSize: '11px',
-                    fontWeight: 'bold',
-                    background: 'none',
+                    background: 'transparent',
                     border: 'none',
                     borderBottom: activeTab === 'laps' ? '2px solid #38bdf8' : 'none',
                     color: activeTab === 'laps' ? '#38bdf8' : '#94a3b8',
                     cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '11px',
                   }}
                 >
                   🏁 Tours ({lapHistory.length})
@@ -1790,13 +2215,13 @@ export default function App() {
                   style={{
                     flex: 1,
                     padding: '6px',
-                    fontSize: '11px',
-                    fontWeight: 'bold',
-                    background: 'none',
+                    background: 'transparent',
                     border: 'none',
                     borderBottom: activeTab === 'pitstops' ? '2px solid #38bdf8' : 'none',
                     color: activeTab === 'pitstops' ? '#38bdf8' : '#94a3b8',
                     cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '11px',
                   }}
                 >
                   ⛽ Stands ({pitHistory.length})
@@ -1806,181 +2231,103 @@ export default function App() {
                   style={{
                     flex: 1,
                     padding: '6px',
-                    fontSize: '11px',
-                    fontWeight: 'bold',
-                    background: 'none',
+                    background: 'transparent',
                     border: 'none',
                     borderBottom: activeTab === 'driverStats' ? '2px solid #38bdf8' : 'none',
                     color: activeTab === 'driverStats' ? '#38bdf8' : '#94a3b8',
                     cursor: 'pointer',
+                    fontWeight: 'bold',
+                    fontSize: '11px',
                   }}
                 >
                   👤 Pilotes
                 </button>
               </div>
 
-              {/* TABLEAU DES TOURS */}
-              {activeTab === 'laps' && (
-                <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #334155', borderRadius: '6px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
-                    <thead>
-                      <tr style={{ background: '#334155', color: '#94a3b8', position: 'sticky', top: 0 }}>
-                        <th style={{ padding: '4px' }}>T</th>
-                        <th style={{ padding: '4px' }}>Pilote</th>
-                        <th style={{ padding: '4px' }}>Temps</th>
-                        <th style={{ padding: '4px' }}>Moy</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {lapHistory.length === 0 ? (
-                        <tr>
-                          <td colSpan={4} style={{ padding: '20px', color: '#64748b' }}>
-                            Aucun tour enregistré.
-                          </td>
-                        </tr>
-                      ) : (
-                        lapHistory.map((item) => (
-                          <tr key={item.id || item.lap} style={{ borderBottom: '1px solid #334155' }}>
-                            <td style={{ padding: '4px', fontWeight: 'bold' }}>#{item.lap}</td>
-                            <td style={{ padding: '4px', color: '#93c5fd' }}>{item.driver}</td>
-                            <td style={{ padding: '4px', color: item.totalTime === bestLapTime ? '#4ade80' : '#fbbf24', fontWeight: 'bold' }}>
-                              {formatSec(item.totalTime)}
-                            </td>
-                            <td style={{ padding: '4px', color: '#7dd3fc' }}>{item.avgSpeed} km/h</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* TABLEAU DES ARRÊTS AUX STANDS */}
-              {activeTab === 'pitstops' && (
-                <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #334155', borderRadius: '6px' }}>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '11px', textAlign: 'center' }}>
-                    <thead>
-                      <tr style={{ background: '#334155', color: '#94a3b8', position: 'sticky', top: 0 }}>
-                        <th style={{ padding: '4px' }}>Heure</th>
-                        <th style={{ padding: '4px' }}>Pilote</th>
-                        <th style={{ padding: '4px' }}>Durée</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {pitHistory.length === 0 ? (
-                        <tr>
-                          <td colSpan={3} style={{ padding: '20px', color: '#64748b' }}>
-                            Aucun arrêt enregistré.
-                          </td>
-                        </tr>
-                      ) : (
-                        pitHistory.map((p) => (
-                          <tr key={p.id} style={{ borderBottom: '1px solid #334155' }}>
-                            <td style={{ padding: '4px', color: '#94a3b8' }}>{p.timestamp}</td>
-                            <td style={{ padding: '4px', color: '#93c5fd' }}>{p.driver}</td>
-                            <td style={{ padding: '4px', fontWeight: 'bold', color: '#fbbf24' }}>{p.duration}s</td>
-                          </tr>
-                        ))
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* STATISTIQUES PILOTES */}
-              {activeTab === 'driverStats' && (
-                <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                  {driverStats.map((s) => (
-                    <div key={s.driver} style={{ background: '#0f172a', padding: '6px', borderRadius: '4px', border: s.driver === currentDriver ? '1px solid #3b82f6' : '1px solid #334155' }}>
-                      <div style={{ fontSize: '11px', fontWeight: 'bold', color: s.driver === currentDriver ? '#60a5fa' : '#f8fafc' }}>
-                        👤 {s.driver} {s.driver === currentDriver && '🟢'}
-                      </div>
-                      <div style={{ fontSize: '10px', color: '#94a3b8', marginTop: '2px' }}>
-                        Tours: <strong>{s.totalLaps}</strong> | Best: <strong style={{ color: '#4ade80' }}>{formatSec(s.bestTime)}</strong>
-                      </div>
-                    </div>
-                  ))}
-
-                  <div style={{ marginTop: 'auto', background: '#0f172a', padding: '6px', borderRadius: '4px' }}>
-                    <div style={{ display: 'flex', gap: '4px' }}>
-                      <input
-                        type="text"
-                        placeholder="Nouveau pilote..."
-                        value={newDriverInput}
-                        onChange={(e) => setNewDriverInput(e.target.value)}
-                        style={{ flex: 1, padding: '4px 6px', background: '#1e293b', color: 'white', border: '1px solid #475569', borderRadius: '4px', fontSize: '11px' }}
-                      />
-                      <button
-                        onClick={handleAddNewDriver}
-                        style={{ padding: '4px 8px', background: '#10b981', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold' }}
+              {/* CONTENU ONGLETS */}
+              <div style={{ flex: 1, overflowY: 'auto', background: '#0f172a', padding: '6px', borderRadius: '6px', border: '1px solid #334155', minHeight: '130px' }}>
+                {activeTab === 'laps' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '10px', color: '#94a3b8' }}>Filtrer par pilote :</span>
+                      <select
+                        value={filterDriver}
+                        onChange={(e) => setFilterDriver(e.target.value)}
+                        style={{ padding: '2px 4px', background: '#1e293b', color: 'white', border: '1px solid #475569', borderRadius: '4px', fontSize: '10px' }}
                       >
-                        +
-                      </button>
+                        <option value="all">Tous les pilotes</option>
+                        {driversList.map((d) => (
+                          <option key={d} value={d}>
+                            {d}
+                          </option>
+                        ))}
+                      </select>
                     </div>
+
+                    {filteredLapHistory.length === 0 ? (
+                      <div style={{ textAlign: 'center', color: '#64748b', fontSize: '11px', padding: '20px 0' }}>
+                        Aucun tour enregistré.
+                      </div>
+                    ) : (
+                      filteredLapHistory.map((item) => (
+                        <div key={item.id || item.lap} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#1e293b', padding: '6px 8px', borderRadius: '4px', fontSize: '11px', borderLeft: item.totalTime === bestLapTime ? '3px solid #fbbf24' : '3px solid #3b82f6' }}>
+                          <div>
+                            <span style={{ fontWeight: 'bold', color: '#38bdf8' }}>Tour #{item.lap}</span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>({item.driver})</span>
+                          </div>
+                          <div style={{ textAlign: 'right' }}>
+                            <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{formatSec(item.totalTime)}</span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>{item.avgSpeed} km/h</span>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
-                </div>
-              )}
+                )}
 
+                {activeTab === 'pitstops' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    {pitHistory.length === 0 ? (
+                      <div style={{ textAlign: 'center', color: '#64748b', fontSize: '11px', padding: '20px 0' }}>
+                        Aucun arrêt aux stands.
+                      </div>
+                    ) : (
+                      pitHistory.map((p) => (
+                        <div key={p.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#1e293b', padding: '6px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                          <div>
+                            <span style={{ fontWeight: 'bold', color: '#eab308' }}>Arrêt Tour #{p.lap}</span>
+                            <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>({p.driver})</span>
+                          </div>
+                          <div style={{ fontWeight: 'bold', color: '#f8fafc' }}>
+                            ⏱️ {p.duration}s
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                )}
+
+                {activeTab === 'driverStats' && (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                    {driverStats.map((s) => (
+                      <div key={s.driver} style={{ background: '#1e293b', padding: '6px 8px', borderRadius: '4px', fontSize: '11px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontWeight: 'bold', color: '#38bdf8' }}>
+                          <span>👤 {s.driver}</span>
+                          <span>{s.laps} tour(s)</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', color: '#94a3b8', marginTop: '2px', fontSize: '10px' }}>
+                          <span>Meilleur : <strong style={{ color: '#fbbf24' }}>{formatSec(s.bestLap)}</strong></span>
+                          <span>Moyenne : <strong>{formatSec(s.avgLap)}</strong></span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        </>
-      )}
-
-      {/* ==================================================================== */}
-      {/* VUE 3 : ÉDITEUR DE CIRCUIT */}
-      {/* ==================================================================== */}
-      {viewRole === 'circuit' && (
-        <div style={{ background: '#1e293b', padding: '10px', borderRadius: '8px', border: '1px solid #f59e0b', display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
-          <span style={{ fontSize: '13px', fontWeight: 'bold', color: '#f59e0b' }}>🛠️ Outils Éditeur :</span>
-          
-          <button
-            onClick={() => {
-              setPlacementMode('startLine');
-              showToast('Cliquez sur le tracé pour repositionner la ligne de départ / arrivée.');
-            }}
-            style={{ padding: '5px 10px', background: placementMode === 'startLine' ? '#16a34a' : '#334155', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-          >
-            🏁 Ligne Départ/Arrivée
-          </button>
-
-          <button
-            onClick={() => {
-              setPlacementMode('intermediate');
-              showToast('Cliquez sur le tracé pour ajouter une balise intermédiaire (S1, S2...).');
-            }}
-            style={{ padding: '5px 10px', background: placementMode === 'intermediate' ? '#f59e0b' : '#334155', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-          >
-            📍 Ajouter Balise Secteur
-          </button>
-
-          <button
-            onClick={() => {
-              setPlacementMode('pitEntry');
-              showToast("Cliquez sur le tracé pour positionner l'entrée des stands.");
-            }}
-            style={{ padding: '5px 10px', background: placementMode === 'pitEntry' ? '#2563eb' : '#334155', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-          >
-            ⛽ Placer Entrée Stands
-          </button>
-
-          <button
-            onClick={() => {
-              setPlacementMode('pitExit');
-              showToast('Cliquez sur le tracé pour positionner la sortie des stands.');
-            }}
-            style={{ padding: '5px 10px', background: placementMode === 'pitExit' ? '#0284c7' : '#334155', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-          >
-            🏁 Placer Sortie Stands
-          </button>
-
-          <button
-            onClick={() => setPlacementMode('none')}
-            style={{ padding: '5px 10px', background: '#64748b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '12px' }}
-          >
-            ✖️ Terminer
-          </button>
+          )}
         </div>
-      )}
+      </div>
 
       {/* ==================================================================== */}
       {/* MODALE EXPORT DONNÉES SQL / JSON */}
@@ -2029,41 +2376,49 @@ export default function App() {
         <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', zIndex: 9999, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ background: '#1e293b', padding: '20px', borderRadius: '10px', border: '2px solid #3b82f6', width: '320px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
             <h3 style={{ margin: 0, fontSize: '15px', color: '#f8fafc' }}>🔄 Changement de pilote / Nouveau relais</h3>
-            <p style={{ margin: 0, fontSize: '12px', color: '#94a3b8' }}>
-              Sélectionnez le pilote qui prend le guidon pour le <strong>Relais #{currentStint + 1}</strong> :
-            </p>
-
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-              {drivers.map((d) => (
-                <button
-                  key={d}
-                  onClick={() => handleChangeDriver(d)}
-                  style={{
-                    padding: '8px 12px',
-                    background: d === currentDriver ? '#1d4ed8' : '#334155',
-                    color: 'white',
-                    border: '1px solid #475569',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontSize: '12px',
-                    fontWeight: 'bold',
-                    textAlign: 'left',
-                    display: 'flex',
-                    justifyContent: 'space-between',
-                  }}
-                >
-                  <span>👤 {d}</span>
-                  {d === currentDriver && <span style={{ fontSize: '10px', color: '#93c5fd' }}>(Actuel)</span>}
-                </button>
-              ))}
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Pilote prenant le guidon :</label>
+              <select
+                value={currentDriver}
+                onChange={(e) => setCurrentDriver(e.target.value)}
+                style={{ width: '100%', padding: '6px', background: '#0f172a', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
+              >
+                {driversList.map((d) => (
+                  <option key={d} value={d}>
+                    {d}
+                  </option>
+                ))}
+              </select>
             </div>
 
-            <button
-              onClick={() => setShowDriverModal(false)}
-              style={{ padding: '6px', background: '#64748b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '11px', marginTop: '6px' }}
-            >
-              Annuler
-            </button>
+            <div>
+              <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Numéro de relais :</label>
+              <input
+                type="number"
+                min="1"
+                value={currentStint}
+                onChange={(e) => setCurrentStint(parseInt(e.target.value) || 1)}
+                style={{ width: '100%', padding: '6px', background: '#0f172a', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px' }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', gap: '8px', marginTop: '6px' }}>
+              <button
+                onClick={() => {
+                  setShowDriverModal(false);
+                  showToast(`Relais #${currentStint} démarré avec ${currentDriver} !`);
+                }}
+                style={{ flex: 1, padding: '8px', background: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', fontSize: '12px' }}
+              >
+                Valider Relais
+              </button>
+              <button
+                onClick={() => setShowDriverModal(false)}
+                style={{ padding: '8px 12px', background: '#64748b', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px' }}
+              >
+                Annuler
+              </button>
+            </div>
           </div>
         </div>
       )}
