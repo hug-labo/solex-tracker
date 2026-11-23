@@ -1363,7 +1363,7 @@ export default function App() {
           );
       setInPitsState(currentlyInPits || simInPitStop);
 
-      // 3. Arrêt aux stands
+      // 3. Arrêt aux stands (le chrono total du tour continue de tourner)
       if (simInPitStop) {
         setSpeed(0);
         pitDurationRef.current += dt;
@@ -1371,10 +1371,13 @@ export default function App() {
         setAlertStopped(false);
         stopDurationRef.current = 0;
         setStopElapsedSeconds(0);
+
+        const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
+        setCurrentLapTime(currentLapDuration);
         return;
       }
 
-      // 4. Panne en piste simulée
+      // 4. Panne en piste simulée (le chrono du tour continue de tourner sans pause)
       if (simStopped) {
         setSpeed(0);
         if (!currentlyInPits) {
@@ -1385,6 +1388,9 @@ export default function App() {
             setAlertStopped(true);
           }
         }
+
+        const currentLapDuration = (now - lapStartTimeRef.current) / 1000;
+        setCurrentLapTime(currentLapDuration);
         return;
       } else {
         stopDurationRef.current = 0;
@@ -2732,7 +2738,7 @@ export default function App() {
                         <div key={inter.id} style={{ flex: 1, minWidth: '60px', background: '#1e293b', padding: '4px 6px', borderRadius: '4px', textAlign: 'center' }}>
                           <div style={{ fontSize: '10px', color: '#f59e0b', fontWeight: 'bold' }}>{inter.name}</div>
                           <div style={{ fontSize: '11px', fontFamily: 'monospace', color: hasSplit ? '#4ade80' : '#64748b' }}>
-                            {hasSplit ? `${split.toFixed(1)}s` : '--.-'}
+                            {hasSplit ? (split >= 60 ? formatSec(split) : `${split.toFixed(1)}s`) : '--.-'}
                           </div>
                         </div>
                       );
@@ -2819,15 +2825,32 @@ export default function App() {
                       </div>
                     ) : (
                       filteredLapHistory.map((item) => (
-                        <div key={item.id || item.lap} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', background: '#1e293b', padding: '6px 8px', borderRadius: '4px', fontSize: '11px', borderLeft: item.totalTime === bestLapTime ? '3px solid #fbbf24' : '3px solid #3b82f6' }}>
-                          <div>
-                            <span style={{ fontWeight: 'bold', color: '#38bdf8' }}>Tour #{item.lap}</span>
-                            <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>({item.driver})</span>
+                        <div key={item.id || item.lap} style={{ display: 'flex', flexDirection: 'column', gap: '4px', background: '#1e293b', padding: '6px 8px', borderRadius: '4px', fontSize: '11px', borderLeft: item.totalTime === bestLapTime ? '3px solid #fbbf24' : '3px solid #3b82f6' }}>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <div>
+                              <span style={{ fontWeight: 'bold', color: '#38bdf8' }}>Tour #{item.lap}</span>
+                              <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>({item.driver})</span>
+                            </div>
+                            <div style={{ textAlign: 'right' }}>
+                              <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{formatSec(item.totalTime)}</span>
+                              <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>{item.avgSpeed} km/h</span>
+                            </div>
                           </div>
-                          <div style={{ textAlign: 'right' }}>
-                            <span style={{ fontFamily: 'monospace', fontWeight: 'bold' }}>{formatSec(item.totalTime)}</span>
-                            <span style={{ fontSize: '10px', color: '#94a3b8', marginLeft: '6px' }}>{item.avgSpeed} km/h</span>
-                          </div>
+                          {item.intermediateTimes && item.intermediateTimes.length > 0 && item.intermediateTimes.some((t) => typeof t === 'number') && (
+                            <div style={{ display: 'flex', gap: '8px', fontSize: '10px', color: '#94a3b8', borderTop: '1px solid #334155', paddingTop: '3px', flexWrap: 'wrap' }}>
+                              {item.intermediateTimes.map((t, idx) => {
+                                const interName = sortedIntermediates[idx]?.name || `S${idx + 1}`;
+                                return (
+                                  <span key={idx}>
+                                    <strong style={{ color: '#f59e0b' }}>{interName} :</strong>{' '}
+                                    <span style={{ fontFamily: 'monospace', color: typeof t === 'number' ? '#e2e8f0' : '#64748b' }}>
+                                      {typeof t === 'number' ? (t >= 60 ? formatSec(t) : `${t.toFixed(1)}s`) : '--.-'}
+                                    </span>
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
                       ))
                     )}
