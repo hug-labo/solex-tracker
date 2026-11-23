@@ -72,6 +72,7 @@ export interface SavedCircuit {
   name: string;
   points: [number, number][];
   intermediates?: IntermediatePoint[];
+  pitPolygon?: [number, number][];
   pitEntryDistance?: number;
   pitExitDistance?: number;
   pitEntryLatLng?: [number, number];
@@ -113,6 +114,12 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
     pitExitDistance: 2650,
     pitEntryLatLng: [47.9478, 0.2015],
     pitExitLatLng: [47.9495, 0.2001],
+    pitPolygon: [
+      [47.9472, 0.2008],
+      [47.9482, 0.2005],
+      [47.9492, 0.2012],
+      [47.9482, 0.2025],
+    ],
   },
   {
     id: 'circuit-nouziers',
@@ -134,6 +141,12 @@ const DEFAULT_CIRCUITS: SavedCircuit[] = [
     pitExitDistance: 3450,
     pitEntryLatLng: [46.4190, 1.9445],
     pitExitLatLng: [46.4230, 1.9405],
+    pitPolygon: [
+      [46.4185, 1.9430],
+      [46.4200, 1.9422],
+      [46.4215, 1.9440],
+      [46.4200, 1.9455],
+    ],
   },
 ];
 
@@ -224,6 +237,31 @@ function reanchorTrackToStartPoint(
   return newPts;
 }
 
+export function isPointInPolygon(point: [number, number], polygon?: [number, number][]): boolean {
+  if (!polygon || polygon.length < 3) return false;
+  const [lat, lng] = point;
+  let inside = false;
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
+    const intersect = ((yi > lng) !== (yj > lng)) &&
+      (lat < (xj - xi) * (lng - yi) / (yj - yi) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+export function getPolygonCenter(polygon?: [number, number][]): [number, number] | null {
+  if (!polygon || polygon.length === 0) return null;
+  let sumLat = 0;
+  let sumLng = 0;
+  for (const p of polygon) {
+    sumLat += p[0];
+    sumLng += p[1];
+  }
+  return [sumLat / polygon.length, sumLng / polygon.length];
+}
+
 export function isDistanceInPits(dist: number, entry?: number, exit?: number): boolean {
   if (entry === undefined || exit === undefined) return false;
   if (entry <= exit) {
@@ -305,7 +343,7 @@ function buildSqlExport(teamId: string, laps: LapRecord[], pitStops: PitStopReco
 // ============================================================================
 export default function App() {
   // Navigation principale de rôle
-  const [viewRole, setViewRole] = useState<'stand' | 'solex' | 'circuit'>('stand');
+  const [viewRole, setViewRole] = useState<'stand' | 'circuit'>('stand');
 
   // Circuits enregistrés
   const [circuits, setCircuits] = useState<SavedCircuit[]>(() => {
@@ -373,7 +411,7 @@ export default function App() {
   const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
   const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
-  const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate' | 'move_intermediate' | 'pitEntry' | 'pitExit'>('none');
+  const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate' | 'move_intermediate' | 'pitPolygon'>('none');
   const [editingCircuitId, setEditingCircuitId] = useState<string | null>(null);
   const [movingIntermediateId, setMovingIntermediateId] = useState<string | null>(null);
   const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
@@ -414,6 +452,7 @@ export default function App() {
   const tileLayerRef = useRef<L.TileLayer | null>(null);
   const polylineRef = useRef<L.Polyline | null>(null);
   const pitPolylineRef = useRef<L.Polyline | null>(null);
+  const pitPolygonRef = useRef<L.Polygon | null>(null);
   const markersGroupRef = useRef<L.LayerGroup | null>(null);
   const solexMarkerRef = useRef<L.Marker | null>(null);
 
@@ -533,7 +572,7 @@ export default function App() {
           ws?.send(
             JSON.stringify({
               type: 'register',
-              role: viewRole === 'solex' ? 'solex' : 'stand',
+              role: 'stand',
               teamId,
             })
           );
@@ -564,8 +603,11 @@ export default function App() {
               if (currentCircuit.points.length >= 2) {
                 const proj = projectPointOnTrack([lat, lng], currentCircuit.points, trackMetrics.cumDistances);
                 const newDist = proj.distance;
-                const inPits = isDistanceInPits(newDist, currentCircuit.pitEntryDistance, currentCircuit.pitExitDistance);
+                const inPits = (currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3)
+                  ? isPointInPolygon([lat, lng], currentCircuit.pitPolygon)
+                  : isDistanceInPits(newDist, currentCircuit.pitEntryDistance, currentCircuit.pitExitDistance);
                 setInPitsState(inPits);
+                if (inPits) setAlertStopped(false);
               }
             }
           } catch (e) {
@@ -736,6 +778,15 @@ export default function App() {
     }).addTo(map);
     pitPolylineRef.current = pitPoly;
 
+    const pitPolyZone = L.polygon([], {
+      color: '#2563eb',
+      fillColor: '#3b82f6',
+      fillOpacity: 0.28,
+      weight: 2,
+      dashArray: '5, 5',
+    }).addTo(map);
+    pitPolygonRef.current = pitPolyZone;
+
     const markersGroup = L.layerGroup().addTo(map);
     markersGroupRef.current = markersGroup;
 
@@ -792,6 +843,9 @@ export default function App() {
       if (pitPolylineRef.current) {
         pitPolylineRef.current.setLatLngs([]);
       }
+      if (pitPolygonRef.current) {
+        pitPolygonRef.current.setLatLngs([]);
+      }
       if (markersGroupRef.current) {
         markersGroupRef.current.clearLayers();
         editTrackPoints.forEach((pt, idx) => {
@@ -814,6 +868,14 @@ export default function App() {
         ? [...currentCircuit.points, currentCircuit.points[0]]
         : currentCircuit.points;
       polylineRef.current.setLatLngs(closedPoints);
+    }
+
+    if (pitPolygonRef.current) {
+      if (currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3) {
+        pitPolygonRef.current.setLatLngs(currentCircuit.pitPolygon);
+      } else {
+        pitPolygonRef.current.setLatLngs([]);
+      }
     }
 
     if (pitPolylineRef.current) {
@@ -841,17 +903,26 @@ export default function App() {
         }).addTo(markersGroupRef.current!);
       });
 
-      // Balises entrée et sortie des stands
-      if (currentCircuit.pitEntryLatLng && currentCircuit.pitEntryDistance !== undefined) {
-        L.marker(currentCircuit.pitEntryLatLng, {
-          icon: createSectorIcon('⛽ ENTRÉE STANDS', '#2563eb', currentCircuit.pitEntryDistance),
-        }).addTo(markersGroupRef.current);
-      }
+      // Zone des stands (Polygone)
+      if (currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3) {
+        const center = getPolygonCenter(currentCircuit.pitPolygon);
+        if (center) {
+          L.marker(center, {
+            icon: createSectorIcon('⛽ ZONE STANDS', '#2563eb', 0),
+          }).addTo(markersGroupRef.current);
+        }
+      } else {
+        if (currentCircuit.pitEntryLatLng && currentCircuit.pitEntryDistance !== undefined) {
+          L.marker(currentCircuit.pitEntryLatLng, {
+            icon: createSectorIcon('⛽ ENTRÉE STANDS', '#2563eb', currentCircuit.pitEntryDistance),
+          }).addTo(markersGroupRef.current);
+        }
 
-      if (currentCircuit.pitExitLatLng && currentCircuit.pitExitDistance !== undefined) {
-        L.marker(currentCircuit.pitExitLatLng, {
-          icon: createSectorIcon('🏁 SORTIE STANDS', '#0284c7', currentCircuit.pitExitDistance),
-        }).addTo(markersGroupRef.current);
+        if (currentCircuit.pitExitLatLng && currentCircuit.pitExitDistance !== undefined) {
+          L.marker(currentCircuit.pitExitLatLng, {
+            icon: createSectorIcon('🏁 SORTIE STANDS', '#0284c7', currentCircuit.pitExitDistance),
+          }).addTo(markersGroupRef.current);
+        }
       }
     }
   }, [currentCircuit, sortedIntermediates, isEditingTrack, editTrackPoints]);
@@ -920,31 +991,16 @@ export default function App() {
         return;
       }
 
-      // Cas 4 : Positionner l'entrée des stands
-      if (placementMode === 'pitEntry') {
-        const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
+      // Cas 4 : Positionner les sommets du polygone des stands
+      if (placementMode === 'pitPolygon') {
+        const currentPoly = currentCircuit.pitPolygon || [];
+        const newPoly = [...currentPoly, clickPos];
         const updated = circuits.map((c) =>
-          c.id === currentCircuit.id
-            ? { ...c, pitEntryDistance: proj.distance, pitEntryLatLng: proj.latLng }
-            : c
+          c.id === currentCircuit.id ? { ...c, pitPolygon: newPoly } : c
         );
         setCircuits(updated);
-        setPlacementMode('none');
-        showToast(`⛽ Entrée des stands placée à ${Math.round(proj.distance)}m !`);
-        return;
-      }
-
-      // Cas 5 : Positionner la sortie des stands
-      if (placementMode === 'pitExit') {
-        const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
-        const updated = circuits.map((c) =>
-          c.id === currentCircuit.id
-            ? { ...c, pitExitDistance: proj.distance, pitExitLatLng: proj.latLng }
-            : c
-        );
-        setCircuits(updated);
-        setPlacementMode('none');
-        showToast(`🏁 Sortie des stands placée à ${Math.round(proj.distance)}m !`);
+        try { localStorage.setItem('solex_circuits_v8', JSON.stringify(updated)); } catch (e) { console.error(e); }
+        showToast(`📐 Sommet #${newPoly.length} ajouté à la zone des stands.`);
         return;
       }
     };
@@ -991,12 +1047,14 @@ export default function App() {
       }
 
       // 2. Zone des stands
-      const currentlyInPits = isDistanceInPits(
-        distanceCoveredInLapRef.current,
-        currentCircuit.pitEntryDistance,
-        currentCircuit.pitExitDistance
-      );
-      setInPitsState(currentlyInPits);
+      const currentlyInPits = (currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3 && lastKnownPosRef.current)
+        ? isPointInPolygon(lastKnownPosRef.current, currentCircuit.pitPolygon)
+        : isDistanceInPits(
+            distanceCoveredInLapRef.current,
+            currentCircuit.pitEntryDistance,
+            currentCircuit.pitExitDistance
+          );
+      setInPitsState(currentlyInPits || simInPitStop);
 
       // 3. Arrêt aux stands
       if (simInPitStop) {
@@ -1288,7 +1346,7 @@ export default function App() {
   const handleResetPits = () => {
     const updated = circuits.map((c) =>
       c.id === currentCircuit.id
-        ? { ...c, pitEntryDistance: undefined, pitExitDistance: undefined, pitEntryLatLng: undefined, pitExitLatLng: undefined }
+        ? { ...c, pitPolygon: undefined, pitEntryDistance: undefined, pitExitDistance: undefined, pitEntryLatLng: undefined, pitExitLatLng: undefined }
         : c
     );
     setCircuits(updated);
@@ -1297,30 +1355,48 @@ export default function App() {
     } catch (e) {
       console.error(e);
     }
-    showToast("Repères d'entrée et sortie des stands réinitialisés.");
+    showToast("Zone des stands réinitialisée.");
   };
 
   const handleStartPitStop = () => {
     setSimInPitStop(true);
+    setInPitsState(true);
+    setAlertStopped(false);
     pitDurationRef.current = 0;
     setPitTimerSeconds(0);
-    showToast('⛽ Entrée aux stands effectuée !');
+    
+    // Déplacer visuellement le solex au centre de la zone des stands si définie
+    const center = getPolygonCenter(currentCircuit.pitPolygon);
+    if (center && solexMarkerRef.current) {
+      solexMarkerRef.current.setLatLng(center);
+      lastKnownPosRef.current = center;
+    }
+    showToast('⛽ Entrée aux stands simulée ! Chronomètre d\'arrêt lancé.');
   };
 
   const handleExitPitStop = () => {
+    const duration = Math.round(pitDurationRef.current);
     const record: PitStopRecord = {
       id: `pit-${Date.now()}`,
       lap: currentLap,
       driver: currentDriver,
       stint: currentStint,
-      duration: Math.round(pitDurationRef.current),
+      duration,
       timestamp: new Date().toLocaleTimeString(),
     };
     setPitHistory((prev) => [record, ...prev]);
     setSimInPitStop(false);
+    setInPitsState(false);
     pitDurationRef.current = 0;
     setPitTimerSeconds(0);
-    showToast(`🏁 Sortie des stands après ${record.duration}s d'arrêt !`);
+    
+    // Replacer le solex sur le tracé de la piste
+    if (currentCircuit.points.length > 0 && solexMarkerRef.current) {
+      const pt = getPositionFromDistance(distanceCoveredInLapRef.current);
+      solexMarkerRef.current.setLatLng(pt);
+      lastKnownPosRef.current = pt;
+    }
+    showToast(`🏁 Sortie des stands après ${duration}s d\'arrêt ! Reprise de piste.`);
   };
 
   const handleSearchLocation = async (e: React.FormEvent) => {
@@ -1438,12 +1514,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* ONGLETS DES RÔLES */}
+        {/* ONGLETS DES RÔLES (STANDS & ÉDITEUR) */}
         <div style={{ display: 'flex', gap: '4px', background: '#1e293b', padding: '3px', borderRadius: '6px' }}>
           <button
             onClick={() => setViewRole('stand')}
             style={{
-              padding: '6px 12px',
+              padding: '6px 14px',
               fontSize: '12px',
               fontWeight: 'bold',
               borderRadius: '5px',
@@ -1453,27 +1529,12 @@ export default function App() {
               color: viewRole === 'stand' ? 'white' : '#94a3b8',
             }}
           >
-            📊 Stands (Télémétrie)
-          </button>
-          <button
-            onClick={() => setViewRole('solex')}
-            style={{
-              padding: '6px 12px',
-              fontSize: '12px',
-              fontWeight: 'bold',
-              borderRadius: '5px',
-              border: 'none',
-              cursor: 'pointer',
-              background: viewRole === 'solex' ? '#16a34a' : 'transparent',
-              color: viewRole === 'solex' ? 'white' : '#94a3b8',
-            }}
-          >
-            📱 Solex Embarqué (Guidon)
+            🏁 Écran Stands (Live)
           </button>
           <button
             onClick={() => setViewRole('circuit')}
             style={{
-              padding: '6px 12px',
+              padding: '6px 14px',
               fontSize: '12px',
               fontWeight: 'bold',
               borderRadius: '5px',
@@ -1505,110 +1566,9 @@ export default function App() {
       )}
 
       {/* ==================================================================== */}
-      {/* VUE 1 : SOLEX EMBARQUÉ (SMARTPHONE AU GUIDON) */}
+      {/* CONTENU PRINCIPAL : STANDS & ÉDITEUR CIRCUIT */}
       {/* ==================================================================== */}
-      {viewRole === 'solex' && (
-        <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '12px', padding: '16px', background: '#020617', overflowY: 'auto' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
-            <div>
-              <h2 style={{ margin: 0, fontSize: '18px', color: '#4ade80' }}>📱 Émetteur Télémétrie Embarqué</h2>
-              <p style={{ margin: '2px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>
-                Fixez ce smartphone sur le guidon du Solex et lancez l'émission GPS live.
-              </p>
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '12px', color: '#94a3b8' }}>Équipe :</span>
-              <input
-                type="text"
-                value={teamId}
-                onChange={(e) => setTeamId(e.target.value)}
-                style={{ padding: '6px 10px', background: '#1e293b', color: 'white', border: '1px solid #475569', borderRadius: '6px', fontSize: '12px', width: '120px' }}
-              />
-            </div>
-          </div>
-
-          {/* Vitesse géante lisible sur guidon */}
-          <div style={{ background: '#0f172a', border: '2px solid #22c55e', borderRadius: '12px', padding: '24px', textAlign: 'center' }}>
-            <div style={{ fontSize: '14px', color: '#94a3b8', letterSpacing: '1px' }}>VITESSE GPS INSTANTANÉE</div>
-            <div style={{ fontSize: '72px', fontWeight: '900', color: gpsSpeed > 90 ? '#f87171' : '#4ade80', fontFamily: 'monospace' }}>
-              {gpsSpeed}
-            </div>
-            <div style={{ fontSize: '16px', color: '#64748b' }}>km / h</div>
-          </div>
-
-          {/* Commandes d'émission GPS */}
-          <div style={{ display: 'flex', gap: '10px' }}>
-            {!isGpsTransmitting ? (
-              <button
-                onClick={startGpsTransmission}
-                style={{ flex: 1, padding: '14px', background: '#16a34a', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
-              >
-                ▶️ Démarrer l'Émission GPS
-              </button>
-            ) : (
-              <button
-                onClick={stopGpsTransmission}
-                style={{ flex: 1, padding: '14px', background: '#dc2626', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 'bold', fontSize: '16px' }}
-              >
-                ⏹️ Arrêter l'Émission GPS
-              </button>
-            )}
-
-            <button
-              onClick={() => setIsSimulatingPhoneGps((v) => !v)}
-              style={{
-                padding: '14px 18px',
-                background: isSimulatingPhoneGps ? '#eab308' : '#334155',
-                color: isSimulatingPhoneGps ? '#0f172a' : 'white',
-                border: 'none',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                fontWeight: 'bold',
-                fontSize: '13px',
-              }}
-            >
-              {isSimulatingPhoneGps ? '🎮 Simu GPS Active' : '🎮 Test GPS Simulé'}
-            </button>
-          </div>
-
-          {/* Cadrans d'état du téléphone */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '10px' }}>
-            <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8' }}>PRÉCISION GPS</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '4px', color: gpsAccuracy !== null && gpsAccuracy < 6 ? '#4ade80' : '#f59e0b' }}>
-                {gpsAccuracy !== null ? `± ${gpsAccuracy} m` : '--'}
-              </div>
-            </div>
-
-            <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8' }}>CAP / DIRECTION</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '4px', color: '#38bdf8' }}>
-                {gpsHeading !== null && gpsHeading !== undefined ? `${Math.round(gpsHeading)}°` : '--'}
-              </div>
-            </div>
-
-            <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8' }}>PAQUETS ÉMIS</div>
-              <div style={{ fontSize: '20px', fontWeight: 'bold', marginTop: '4px', color: '#f8fafc' }}>
-                {gpsPacketsSent}
-              </div>
-            </div>
-
-            <div style={{ background: '#1e293b', padding: '12px', borderRadius: '8px', textAlign: 'center' }}>
-              <div style={{ fontSize: '11px', color: '#94a3b8' }}>ÉCRAN ANTI-VEILLE</div>
-              <div style={{ fontSize: '14px', fontWeight: 'bold', marginTop: '8px', color: wakeLockActive ? '#4ade80' : '#f87171' }}>
-                {wakeLockActive ? '☀️ Actif' : '🌙 Standard'}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ==================================================================== */}
-      {/* VUE 2 & 3 : STANDS ET ÉDITEUR CIRCUIT (CARTE COMMUNE TOUJOURS MONTÉE) */}
-      {/* ==================================================================== */}
-      <div style={{ flex: 1, display: viewRole === 'solex' ? 'none' : 'flex', flexDirection: 'column', gap: '8px', padding: '8px 16px', minHeight: 0 }}>
+      <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '8px', padding: '8px 16px', minHeight: 0 }}>
 
         {/* ALERTES STANDS */}
         {alertStopped && (
@@ -1892,22 +1852,46 @@ export default function App() {
               {simStopped ? '▶️ Reprendre Piste' : '⚠️ Simuler Panne Piste'}
             </button>
 
-            <button
-              onClick={handleStartPitStop}
-              disabled={simInPitStop}
-              style={{
-                padding: '5px 10px',
-                background: '#2563eb',
-                color: 'white',
-                border: 'none',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontSize: '11px',
-                fontWeight: 'bold',
-              }}
-            >
-              ⛽ Simuler Entrée Stand
-            </button>
+            {!simInPitStop ? (
+              <button
+                onClick={handleStartPitStop}
+                style={{
+                  padding: '5px 11px',
+                  background: '#2563eb',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                }}
+              >
+                ⛽ Simuler Entrée Stand
+              </button>
+            ) : (
+              <button
+                onClick={handleExitPitStop}
+                style={{
+                  padding: '5px 11px',
+                  background: '#16a34a',
+                  color: 'white',
+                  border: 'none',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontSize: '11px',
+                  fontWeight: 'bold',
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  boxShadow: '0 0 10px rgba(22, 163, 74, 0.6)',
+                }}
+              >
+                🏁 Sortir Stand ({pitTimerSeconds}s)
+              </button>
+            )}
 
             <button
               onClick={() => setSimSignalLost((v) => !v)}
@@ -1953,8 +1937,8 @@ export default function App() {
                   {placementMode === 'startLine' && '🏁 Cliquez sur la piste pour y déplacer le Départ / Arrivée (km 0)'}
                   {placementMode === 'intermediate' && '📍 Cliquez sur la piste pour poser une nouvelle balise secteur'}
                   {placementMode === 'move_intermediate' && '🔄 Cliquez sur la piste pour repositionner la balise sélectionnée'}
-                  {placementMode === 'pitEntry' && "⛽ Cliquez sur la piste pour positionner l'entrée des stands"}
-                  {placementMode === 'pitExit' && '🏁 Cliquez sur la piste pour positionner la sortie des stands'}
+                  {placementMode === 'pitPolygon' && "📐 Cliquez sur la carte pour poser les sommets du polygone des stands (min 3 points, puis validez)"}
+                  
                 </span>
                 <button
                   onClick={() => {
@@ -2244,24 +2228,36 @@ export default function App() {
                 </div>
               </div>
 
-              {/* CARTE 4 : ZONE DES STANDS (ENTRÉE & SORTIE) */}
+              {/* CARTE 4 : ZONE DES STANDS (POLYGONE HORS TRACÉ) */}
               <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>
-                  ⛽ Zone des Stands (Entrée & Sortie)
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>
+                    ⛽ Zone des Stands (Polygone Hors Tracé)
+                  </div>
+                  {currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3 && (
+                    <span style={{ fontSize: '10px', background: '#1e3a8a', color: '#93c5fd', padding: '2px 6px', borderRadius: '4px' }}>
+                      {currentCircuit.pitPolygon.length} sommets
+                    </span>
+                  )}
                 </div>
-                <div style={{ display: 'flex', gap: '6px' }}>
+
+                <p style={{ margin: 0, fontSize: '11px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  Tracez une zone libre (rectangle ou polygone) englobant votre allée des stands en cliquant sur la carte.
+                </p>
+
+                <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
                   <button
                     onClick={() => {
-                      const nextMode = placementMode === 'pitEntry' ? 'none' : 'pitEntry';
+                      const nextMode = placementMode === 'pitPolygon' ? 'none' : 'pitPolygon';
                       setPlacementMode(nextMode);
-                      if (nextMode === 'pitEntry') {
-                        showToast("Cliquez sur la piste pour positionner l'entrée des stands.");
+                      if (nextMode === 'pitPolygon') {
+                        showToast("📐 Cliquez sur la carte pour poser les sommets du polygone des stands.");
                       }
                     }}
                     style={{
                       flex: 1,
                       padding: '8px',
-                      background: placementMode === 'pitEntry' ? '#2563eb' : '#1e293b',
+                      background: placementMode === 'pitPolygon' ? '#2563eb' : '#1e293b',
                       color: 'white',
                       border: '1px solid #2563eb',
                       borderRadius: '6px',
@@ -2270,48 +2266,54 @@ export default function App() {
                       fontWeight: 'bold',
                     }}
                   >
-                    {placementMode === 'pitEntry' ? '👉 Cliquez...' : '⛽ Déplacer Entrée'}
+                    {placementMode === 'pitPolygon' ? '👉 Cliquez sur la carte...' : '📐 Définir / Redessiner Zone'}
                   </button>
 
-                  <button
-                    onClick={() => {
-                      const nextMode = placementMode === 'pitExit' ? 'none' : 'pitExit';
-                      setPlacementMode(nextMode);
-                      if (nextMode === 'pitExit') {
-                        showToast('Cliquez sur la piste pour positionner la sortie des stands.');
-                      }
-                    }}
-                    style={{
-                      flex: 1,
-                      padding: '8px',
-                      background: placementMode === 'pitExit' ? '#0284c7' : '#1e293b',
-                      color: 'white',
-                      border: '1px solid #0284c7',
-                      borderRadius: '6px',
-                      cursor: 'pointer',
-                      fontSize: '11px',
-                      fontWeight: 'bold',
-                    }}
-                  >
-                    {placementMode === 'pitExit' ? '👉 Cliquez...' : '🏁 Déplacer Sortie'}
-                  </button>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-                  <span>
-                    {currentCircuit.pitEntryDistance !== undefined && currentCircuit.pitExitDistance !== undefined
-                      ? `${Math.round(currentCircuit.pitEntryDistance)} m ➔ ${Math.round(currentCircuit.pitExitDistance)} m`
-                      : 'Repères stands non définis'}
-                  </span>
-                  {(currentCircuit.pitEntryDistance !== undefined || currentCircuit.pitExitDistance !== undefined) && (
+                  {placementMode === 'pitPolygon' && (currentCircuit.pitPolygon?.length || 0) >= 3 && (
                     <button
-                      onClick={handleResetPits}
-                      style={{ background: 'transparent', color: '#f87171', border: 'none', cursor: 'pointer', fontSize: '10px' }}
-                      title="Effacer les repères stands"
+                      onClick={() => {
+                        setPlacementMode('none');
+                        showToast(`✅ Zone stands validée avec ${currentCircuit.pitPolygon?.length} sommets !`);
+                      }}
+                      style={{
+                        padding: '8px 12px',
+                        background: '#16a34a',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                      }}
                     >
-                      Effacer
+                      ✅ Valider
                     </button>
                   )}
+
+                  {currentCircuit.pitPolygon && currentCircuit.pitPolygon.length > 0 && (
+                    <button
+                      onClick={handleResetPits}
+                      style={{
+                        padding: '8px 10px',
+                        background: '#ef4444',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontSize: '11px',
+                        fontWeight: 'bold',
+                      }}
+                      title="Effacer le polygone des stands"
+                    >
+                      🗑️ Effacer
+                    </button>
+                  )}
+                </div>
+
+                <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                  {currentCircuit.pitPolygon && currentCircuit.pitPolygon.length >= 3
+                    ? `Zone active (${currentCircuit.pitPolygon.length} sommets) - Neutralise les alertes d'arrêt en piste.`
+                    : 'Aucun polygone défini. Cliquez sur Définir puis posez au moins 3 points sur la carte.'}
                 </div>
               </div>
 
