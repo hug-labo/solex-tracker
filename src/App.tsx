@@ -373,7 +373,9 @@ export default function App() {
   const [isEditingTrack, setIsEditingTrack] = useState<boolean>(false);
   const [newCircuitName, setNewCircuitName] = useState<string>('Mon Nouveau Circuit');
   const [editTrackPoints, setEditTrackPoints] = useState<[number, number][]>([]);
-  const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate' | 'pitEntry' | 'pitExit'>('none');
+  const [placementMode, setPlacementMode] = useState<'none' | 'startLine' | 'intermediate' | 'move_intermediate' | 'pitEntry' | 'pitExit'>('none');
+  const [editingCircuitId, setEditingCircuitId] = useState<string | null>(null);
+  const [movingIntermediateId, setMovingIntermediateId] = useState<string | null>(null);
   const [notificationMsg, setNotificationMsg] = useState<string | null>(null);
 
   // Contrôles de simulation
@@ -862,7 +864,7 @@ export default function App() {
     const handleClick = (e: L.LeafletMouseEvent) => {
       const clickPos: [number, number] = [e.latlng.lat, e.latlng.lng];
 
-      // Cas 1 : Tracé direct d'un nouveau circuit
+                    {editingCircuitId ? `✏️ Modification du Tracé de "${currentCircuit.name}"` : "✏️ Tracé d'un Nouveau Circuit"}
       if (isEditingTrack) {
         setEditTrackPoints((prev) => [...prev, clickPos]);
         return;
@@ -873,6 +875,7 @@ export default function App() {
         const reanchored = reanchorTrackToStartPoint(currentCircuit.points, clickPos, trackMetrics.cumDistances);
         const updated = circuits.map((c) => (c.id === currentCircuit.id ? { ...c, points: reanchored } : c));
         setCircuits(updated);
+        try { localStorage.setItem('solex_circuits_v8', JSON.stringify(updated)); } catch (e) { console.error(e); }
         setPlacementMode('none');
         showToast('🏁 Ligne de départ repositionnée avec succès !');
         return;
@@ -892,8 +895,28 @@ export default function App() {
           c.id === currentCircuit.id ? { ...c, intermediates: updatedIntermediates } : c
         );
         setCircuits(updated);
+        try { localStorage.setItem('solex_circuits_v8', JSON.stringify(updated)); } catch (e) { console.error(e); }
         setPlacementMode('none');
         showToast(`📍 Balise intermédiaire ajoutée à ${Math.round(proj.distance)}m !`);
+        return;
+      }
+
+      // Cas 3bis : Déplacer une balise intermédiaire existante
+      if (placementMode === 'move_intermediate' && movingIntermediateId) {
+        const proj = projectPointOnTrack(clickPos, currentCircuit.points, trackMetrics.cumDistances);
+        const updatedIntermediates = (currentCircuit.intermediates || []).map((inter) =>
+          inter.id === movingIntermediateId
+            ? { ...inter, distance: proj.distance, latLng: proj.latLng }
+            : inter
+        );
+        const updated = circuits.map((c) =>
+          c.id === currentCircuit.id ? { ...c, intermediates: updatedIntermediates } : c
+        );
+        setCircuits(updated);
+        try { localStorage.setItem('solex_circuits_v8', JSON.stringify(updated)); } catch (e) { console.error(e); }
+        setPlacementMode('none');
+        setMovingIntermediateId(null);
+        showToast(`📍 Balise repositionnée à ${Math.round(proj.distance)}m !`);
         return;
       }
 
@@ -1137,11 +1160,34 @@ export default function App() {
 
   const handleStartCreateCircuit = () => {
     setIsEditingTrack(true);
+    setEditingCircuitId(null);
     setViewRole('circuit');
     setNewCircuitName(`Circuit ${circuits.length + 1}`);
     setEditTrackPoints([]);
     setPlacementMode('none');
     showToast('✏️ Cliquez sur la carte pour déposer les points de votre nouveau circuit.');
+  };
+
+  const handleStartEditCurrentCircuit = () => {
+    setIsEditingTrack(true);
+    setEditingCircuitId(currentCircuit.id);
+    setViewRole('circuit');
+    setNewCircuitName(currentCircuit.name);
+    setEditTrackPoints([...currentCircuit.points]);
+    setPlacementMode('none');
+    showToast(`✏️ Modification du tracé de "${currentCircuit.name}" : cliquez sur la carte pour ajouter des points, ou ↩️ pour retirer.`);
+  };
+
+  const handleRenameCurrentCircuit = (newName: string) => {
+    const updated = circuits.map((c) =>
+      c.id === currentCircuit.id ? { ...c, name: newName } : c
+    );
+    setCircuits(updated);
+    try {
+      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+    } catch (e) {
+      console.error(e);
+    }
   };
 
   const handleSaveCircuit = () => {
@@ -1150,32 +1196,53 @@ export default function App() {
       return;
     }
 
-    const finalName = newCircuitName.trim() || `Circuit ${circuits.length + 1}`;
-    const newCircuit: SavedCircuit = {
-      id: `circuit-${Date.now()}`,
-      name: finalName,
-      points: editTrackPoints,
-      intermediates: [],
-    };
+    const finalName = newCircuitName.trim() || (editingCircuitId ? currentCircuit.name : `Circuit ${circuits.length + 1}`);
 
-    const updated = [...circuits, newCircuit];
-    setCircuits(updated);
-    try {
-      localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
-    } catch (e) {
-      console.error(e);
+    if (editingCircuitId) {
+      const updated = circuits.map((c) =>
+        c.id === editingCircuitId
+          ? { ...c, name: finalName, points: editTrackPoints }
+          : c
+      );
+      setCircuits(updated);
+      try {
+        localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+      } catch (e) {
+        console.error(e);
+      }
+      setIsEditingTrack(false);
+      setEditingCircuitId(null);
+      setEditTrackPoints([]);
+      handleResetSimulation();
+                    {editingCircuitId ? `✏️ Modification du Tracé de "${currentCircuit.name}"` : "✏️ Tracé d'un Nouveau Circuit"}
+    } else {
+      const newCircuit: SavedCircuit = {
+        id: `circuit-${Date.now()}`,
+        name: finalName,
+        points: editTrackPoints,
+        intermediates: [],
+      };
+      const updated = [...circuits, newCircuit];
+      setCircuits(updated);
+      try {
+        localStorage.setItem('solex_circuits_v8', JSON.stringify(updated));
+      } catch (e) {
+        console.error(e);
+      }
+      setSelectedCircuitId(newCircuit.id);
+      setIsEditingTrack(false);
+      setEditingCircuitId(null);
+      setEditTrackPoints([]);
+      handleResetSimulation();
+      showToast(`🎉 Circuit "${finalName}" enregistré !`);
     }
-    setSelectedCircuitId(newCircuit.id);
-    setIsEditingTrack(false);
-    setEditTrackPoints([]);
-    handleResetSimulation();
-    showToast(`🎉 Circuit "${finalName}" enregistré ! Le 1er point cliqué est la ligne de départ.`);
   };
 
   const handleCancelCreateCircuit = () => {
     setIsEditingTrack(false);
+    setEditingCircuitId(null);
     setEditTrackPoints([]);
-    showToast('Création de circuit annulée.');
+    showToast('Édition de circuit annulée.');
   };
 
   const handleUndoLastPoint = () => {
@@ -1647,9 +1714,34 @@ export default function App() {
                 fontSize: '12px',
                 fontWeight: 'bold',
               }}
-              title="Tracer un nouveau circuit au clic sur la carte"
+              title="Tracer un tout nouveau circuit au clic sur la carte"
             >
               ➕ Nouveau Circuit
+            </button>
+
+            {/* BOUTON MODIFIER CE CIRCUIT */}
+            <button
+              onClick={() => {
+                setViewRole('circuit');
+                setPlacementMode('none');
+                showToast(`🛠️ Éditeur ouvert pour "${currentCircuit.name}". Choisissez l'élément à modifier ci-dessous.`);
+              }}
+              style={{
+                padding: '5px 10px',
+                background: '#d97706',
+                color: 'white',
+                border: 'none',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontSize: '12px',
+                fontWeight: 'bold',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="Modifier les balises, la ligne de départ ou le tracé de ce circuit"
+            >
+              ✏️ Modifier ce Circuit
             </button>
           </div>
 
@@ -1856,13 +1948,22 @@ export default function App() {
 
             {/* Instructions de placement au clic (Balises, départ, stands) */}
             {placementMode !== 'none' && !isEditingTrack && (
-              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: '#f59e0b', color: '#0f172a', padding: '6px 14px', borderRadius: '6px', fontWeight: 'bold', fontSize: '12px', zIndex: 1000, boxShadow: '0 2px 8px rgba(0,0,0,0.5)' }}>
-                👉 Cliquez sur le tracé de la piste pour positionner : {placementMode}
+              <div style={{ position: 'absolute', top: 12, left: '50%', transform: 'translateX(-50%)', background: '#f59e0b', color: '#0f172a', padding: '8px 16px', borderRadius: '8px', fontWeight: 'bold', fontSize: '13px', zIndex: 1000, boxShadow: '0 4px 15px rgba(0,0,0,0.5)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <span>
+                  {placementMode === 'startLine' && '🏁 Cliquez sur la piste pour y déplacer le Départ / Arrivée (km 0)'}
+                  {placementMode === 'intermediate' && '📍 Cliquez sur la piste pour poser une nouvelle balise secteur'}
+                  {placementMode === 'move_intermediate' && '🔄 Cliquez sur la piste pour repositionner la balise sélectionnée'}
+                  {placementMode === 'pitEntry' && "⛽ Cliquez sur la piste pour positionner l'entrée des stands"}
+                  {placementMode === 'pitExit' && '🏁 Cliquez sur la piste pour positionner la sortie des stands'}
+                </span>
                 <button
-                  onClick={() => setPlacementMode('none')}
-                  style={{ marginLeft: '10px', background: '#0f172a', color: 'white', border: 'none', borderRadius: '4px', padding: '2px 6px', cursor: 'pointer', fontSize: '10px' }}
+                  onClick={() => {
+                    setPlacementMode('none');
+                    setMovingIntermediateId(null);
+                  }}
+                  style={{ background: '#0f172a', color: 'white', border: 'none', borderRadius: '6px', padding: '4px 8px', cursor: 'pointer', fontSize: '11px', fontWeight: 'bold' }}
                 >
-                  Annuler (Échap)
+                  ✕ Annuler
                 </button>
               </div>
             )}
@@ -1872,19 +1973,21 @@ export default function App() {
           {/* PANNEAU LATÉRAL 1 : ÉDITEUR CIRCUIT (SI RÔLE ÉDITEUR) */}
           {/* ==================================================================== */}
           {viewRole === 'circuit' && (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', background: '#1e293b', padding: '14px', borderRadius: '8px', border: '1px solid #f59e0b', minWidth: '320px', overflowY: 'auto' }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <h3 style={{ margin: 0, fontSize: '16px', color: '#f59e0b' }}>🛠️ Outils Éditeur Circuit</h3>
-                <span style={{ fontSize: '11px', background: '#0f172a', padding: '3px 8px', borderRadius: '4px', color: '#38bdf8' }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '10px', background: '#1e293b', padding: '14px', borderRadius: '8px', border: '1px solid #f59e0b', minWidth: '330px', overflowY: 'auto' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #334155', paddingBottom: '8px' }}>
+                <h3 style={{ margin: 0, fontSize: '16px', color: '#f59e0b', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  🛠️ Éditeur de Circuit
+                </h3>
+                <span style={{ fontSize: '11px', background: '#0f172a', padding: '3px 8px', borderRadius: '4px', color: '#38bdf8', fontWeight: 'bold' }}>
                   {trackMetrics.totalDistanceMeters ? `${Math.round(trackMetrics.totalDistanceMeters)} m` : '0 m'}
                 </span>
               </div>
 
-              {/* FORMULAIRE DE CRÉATION DE TRACÉ */}
+              {/* CARTE 1 : INFORMATIONS & MODIFICATION DU TRACÉ */}
               {isEditingTrack ? (
                 <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '2px solid #f59e0b', display: 'flex', flexDirection: 'column', gap: '10px' }}>
                   <div style={{ fontSize: '13px', fontWeight: 'bold', color: '#fbbf24' }}>
-                    ✏️ Tracé du Nouveau Circuit
+                    {editingCircuitId ? `✏️ Modification du Tracé de "${currentCircuit.name}"` : "✏️ Tracé d'un Nouveau Circuit"}
                   </div>
                   <div>
                     <label style={{ fontSize: '11px', color: '#94a3b8', display: 'block', marginBottom: '4px' }}>Nom du circuit :</label>
@@ -1897,7 +2000,7 @@ export default function App() {
                     />
                   </div>
                   <div style={{ fontSize: '12px', color: '#94a3b8' }}>
-                    Points déposés : <strong>{editTrackPoints.length}</strong> (~{drawnDistanceMeters} m)
+                    Points déposés : <strong style={{ color: '#38bdf8' }}>{editTrackPoints.length}</strong> (~{drawnDistanceMeters} m)
                   </div>
 
                   <div style={{ display: 'flex', gap: '6px' }}>
@@ -1916,7 +2019,7 @@ export default function App() {
                         fontSize: '12px',
                       }}
                     >
-                      💾 Enregistrer le Circuit
+                      💾 Enregistrer le Tracé
                     </button>
                     <button
                       onClick={handleUndoLastPoint}
@@ -1936,75 +2039,224 @@ export default function App() {
                   </div>
                 </div>
               ) : (
-                <button
-                  onClick={handleStartCreateCircuit}
-                  style={{
-                    padding: '10px',
-                    background: '#10b981',
-                    color: 'white',
-                    border: 'none',
-                    borderRadius: '6px',
-                    cursor: 'pointer',
-                    fontWeight: 'bold',
-                    fontSize: '13px',
-                    boxShadow: '0 2px 8px rgba(16,185,129,0.3)',
-                  }}
-                >
-                  ➕ Tracer un Nouveau Circuit sur la carte
-                </button>
+                <div style={{ background: '#0f172a', padding: '10px 12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontSize: '11px', color: '#94a3b8' }}>Nom du circuit :</span>
+                    <span style={{ fontSize: '10px', color: '#64748b' }}>{currentCircuit.points.length} points</span>
+                  </div>
+                  <input
+                    type="text"
+                    value={currentCircuit.name}
+                    onChange={(e) => handleRenameCurrentCircuit(e.target.value)}
+                    style={{
+                      width: '100%',
+                      padding: '6px 8px',
+                      background: '#1e293b',
+                      color: '#f59e0b',
+                      border: '1px solid #475569',
+                      borderRadius: '6px',
+                      fontSize: '13px',
+                      fontWeight: 'bold',
+                      boxSizing: 'border-box',
+                    }}
+                    title="Cliquez pour renommer ce circuit"
+                  />
+                  <div style={{ display: 'flex', gap: '6px', marginTop: '2px' }}>
+                    <button
+                      onClick={handleStartEditCurrentCircuit}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        background: '#d97706',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                      }}
+                      title="Modifier les points du tracé sur la carte"
+                    >
+                      ✏️ Modifier le Tracé
+                    </button>
+                    <button
+                      onClick={handleStartCreateCircuit}
+                      style={{
+                        flex: 1,
+                        padding: '8px',
+                        background: '#10b981',
+                        color: 'white',
+                        border: 'none',
+                        borderRadius: '6px',
+                        cursor: 'pointer',
+                        fontWeight: 'bold',
+                        fontSize: '11px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px',
+                      }}
+                      title="Créer un tout nouveau circuit"
+                    >
+                      ➕ Nouveau Circuit
+                    </button>
+                  </div>
+                </div>
               )}
 
-              {/* OUTILS DE POSITIONNEMENT SUR LE TRACÉ EXISTANT */}
-              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#e2e8f0' }}>
-                  Positionner au clic sur le circuit :
+              {/* CARTE 2 : LIGNE DE DÉPART / ARRIVÉE */}
+              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#10b981', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>🏁 Ligne Départ / Arrivée</span>
+                  <span style={{ fontSize: '10px', color: '#94a3b8' }}>km 0</span>
                 </div>
-
                 <button
                   onClick={() => {
-                    setPlacementMode(placementMode === 'startLine' ? 'none' : 'startLine');
-                    showToast('Cliquez sur la piste pour repositionner la ligne de départ / arrivée.');
+                    const nextMode = placementMode === 'startLine' ? 'none' : 'startLine';
+                    setPlacementMode(nextMode);
+                    if (nextMode === 'startLine') {
+                      showToast('Cliquez sur la piste pour y déplacer la ligne de départ / arrivée.');
+                    }
                   }}
                   style={{
-                    padding: '8px',
+                    padding: '8px 10px',
                     background: placementMode === 'startLine' ? '#16a34a' : '#1e293b',
                     color: 'white',
                     border: '1px solid #16a34a',
                     borderRadius: '6px',
                     cursor: 'pointer',
                     fontSize: '12px',
-                    textAlign: 'left',
                     fontWeight: 'bold',
+                    textAlign: 'left',
                   }}
                 >
-                  🏁 {placementMode === 'startLine' ? '👉 Cliquez sur la piste...' : 'Ligne Départ / Arrivée'}
+                  {placementMode === 'startLine' ? '👉 Cliquez sur la piste...' : '🔄 Déplacer Ligne Départ / Arrivée'}
                 </button>
+              </div>
+
+              {/* CARTE 3 : BALISES INTERMÉDIAIRES (SECTEURS S1, S2...) */}
+              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span style={{ fontSize: '12px', fontWeight: 'bold', color: '#f59e0b' }}>📍 Balises Intermédiaires (Secteurs)</span>
+                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>{sortedIntermediates.length} active(s)</span>
+                </div>
 
                 <button
                   onClick={() => {
-                    setPlacementMode(placementMode === 'intermediate' ? 'none' : 'intermediate');
-                    showToast('Cliquez sur la piste pour poser une balise secteur (S1, S2...).');
+                    const nextMode = placementMode === 'intermediate' ? 'none' : 'intermediate';
+                    setPlacementMode(nextMode);
+                    if (nextMode === 'intermediate') {
+                      showToast('Cliquez sur la piste pour poser une nouvelle balise secteur.');
+                    }
                   }}
                   style={{
-                    padding: '8px',
+                    padding: '8px 10px',
                     background: placementMode === 'intermediate' ? '#f59e0b' : '#1e293b',
                     color: placementMode === 'intermediate' ? '#0f172a' : 'white',
                     border: '1px solid #f59e0b',
                     borderRadius: '6px',
                     cursor: 'pointer',
                     fontSize: '12px',
-                    textAlign: 'left',
                     fontWeight: 'bold',
+                    textAlign: 'left',
                   }}
                 >
-                  📍 {placementMode === 'intermediate' ? '👉 Cliquez sur la piste...' : '+ Ajouter Balise Secteur (S)'}
+                  {placementMode === 'intermediate' ? '👉 Cliquez sur la piste pour poser S...' : '➕ Ajouter une Balise Secteur (S)'}
                 </button>
 
+                {/* Liste des balises existantes avec bouton Déplacer individuel */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '2px' }}>
+                  {sortedIntermediates.length === 0 ? (
+                    <div style={{ fontSize: '11px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
+                      Aucune balise intermédiaire. Cliquez sur le bouton ci-dessus pour en ajouter.
+                    </div>
+                  ) : (
+                    sortedIntermediates.map((inter) => {
+                      const isBeingMoved = placementMode === 'move_intermediate' && movingIntermediateId === inter.id;
+                      return (
+                        <div
+                          key={inter.id}
+                          style={{
+                            fontSize: '11px',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '6px 8px',
+                            background: isBeingMoved ? '#451a03' : '#1e293b',
+                            border: isBeingMoved ? '1px solid #f59e0b' : '1px solid #334155',
+                            borderRadius: '6px',
+                          }}
+                        >
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>📍 {inter.name}</span>
+                            <span style={{ color: '#94a3b8' }}>({Math.round(inter.distance)} m)</span>
+                          </div>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                            <button
+                              onClick={() => {
+                                if (isBeingMoved) {
+                                  setPlacementMode('none');
+                                  setMovingIntermediateId(null);
+                                } else {
+                                  setPlacementMode('move_intermediate');
+                                  setMovingIntermediateId(inter.id);
+                                  showToast(`Cliquez sur la piste pour repositionner la balise ${inter.name}.`);
+                                }
+                              }}
+                              style={{
+                                padding: '3px 6px',
+                                background: isBeingMoved ? '#f59e0b' : '#334155',
+                                color: isBeingMoved ? '#0f172a' : '#38bdf8',
+                                border: 'none',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '10px',
+                                fontWeight: 'bold',
+                              }}
+                              title={`Déplacer la balise ${inter.name}`}
+                            >
+                              {isBeingMoved ? '👉 Cliquez...' : '🔄 Déplacer'}
+                            </button>
+                            <button
+                              onClick={() => handleDeleteIntermediate(inter.id)}
+                              style={{
+                                padding: '3px 6px',
+                                background: '#ef444422',
+                                color: '#ef4444',
+                                border: '1px solid #ef4444',
+                                borderRadius: '4px',
+                                cursor: 'pointer',
+                                fontSize: '10px',
+                              }}
+                              title="Supprimer cette balise"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              {/* CARTE 4 : ZONE DES STANDS (ENTRÉE & SORTIE) */}
+              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#38bdf8' }}>
+                  ⛽ Zone des Stands (Entrée & Sortie)
+                </div>
                 <div style={{ display: 'flex', gap: '6px' }}>
                   <button
                     onClick={() => {
-                      setPlacementMode(placementMode === 'pitEntry' ? 'none' : 'pitEntry');
-                      showToast("Cliquez sur la piste pour positionner l'entrée des stands.");
+                      const nextMode = placementMode === 'pitEntry' ? 'none' : 'pitEntry';
+                      setPlacementMode(nextMode);
+                      if (nextMode === 'pitEntry') {
+                        showToast("Cliquez sur la piste pour positionner l'entrée des stands.");
+                      }
                     }}
                     style={{
                       flex: 1,
@@ -2018,13 +2270,16 @@ export default function App() {
                       fontWeight: 'bold',
                     }}
                   >
-                    ⛽ Entrée Stands
+                    {placementMode === 'pitEntry' ? '👉 Cliquez...' : '⛽ Déplacer Entrée'}
                   </button>
 
                   <button
                     onClick={() => {
-                      setPlacementMode(placementMode === 'pitExit' ? 'none' : 'pitExit');
-                      showToast('Cliquez sur la piste pour positionner la sortie des stands.');
+                      const nextMode = placementMode === 'pitExit' ? 'none' : 'pitExit';
+                      setPlacementMode(nextMode);
+                      if (nextMode === 'pitExit') {
+                        showToast('Cliquez sur la piste pour positionner la sortie des stands.');
+                      }
                     }}
                     style={{
                       flex: 1,
@@ -2038,49 +2293,15 @@ export default function App() {
                       fontWeight: 'bold',
                     }}
                   >
-                    🏁 Sortie Stands
+                    {placementMode === 'pitExit' ? '👉 Cliquez...' : '🏁 Déplacer Sortie'}
                   </button>
                 </div>
-              </div>
 
-              {/* LISTE DES BALISES DU CIRCUIT */}
-              <div style={{ background: '#0f172a', padding: '12px', borderRadius: '8px', border: '1px solid #334155', display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                <div style={{ fontSize: '12px', fontWeight: 'bold', color: '#e2e8f0', display: 'flex', justifyContent: 'space-between' }}>
-                  <span>Balises de chronométrage :</span>
-                  <span style={{ fontSize: '11px', color: '#94a3b8' }}>{sortedIntermediates.length} balise(s)</span>
-                </div>
-
-                <div style={{ fontSize: '11px', color: '#10b981', display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid #1e293b' }}>
-                  <span>🏁 Départ / Arrivée</span>
-                  <span>0 m</span>
-                </div>
-
-                {sortedIntermediates.length === 0 ? (
-                  <div style={{ fontSize: '11px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
-                    Aucune balise intermédiaire. Cliquez sur "+ Ajouter Balise Secteur".
-                  </div>
-                ) : (
-                  sortedIntermediates.map((inter) => (
-                    <div key={inter.id} style={{ fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 0', borderBottom: '1px solid #1e293b' }}>
-                      <span style={{ color: '#f59e0b', fontWeight: 'bold' }}>📍 {inter.name}</span>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <span>{Math.round(inter.distance)} m</span>
-                        <button
-                          onClick={() => handleDeleteIntermediate(inter.id)}
-                          style={{ background: 'transparent', color: '#ef4444', border: 'none', cursor: 'pointer', fontSize: '12px' }}
-                          title="Supprimer cette balise"
-                        >
-                          ✕
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-
-                {/* Statut stands */}
-                <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px solid #334155', fontSize: '11px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                  <span style={{ color: '#38bdf8' }}>
-                    ⛽ Stands : {currentCircuit.pitEntryDistance !== undefined && currentCircuit.pitExitDistance !== undefined ? `${Math.round(currentCircuit.pitEntryDistance)}m ➔ ${Math.round(currentCircuit.pitExitDistance)}m` : 'Non configurés'}
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+                  <span>
+                    {currentCircuit.pitEntryDistance !== undefined && currentCircuit.pitExitDistance !== undefined
+                      ? `${Math.round(currentCircuit.pitEntryDistance)} m ➔ ${Math.round(currentCircuit.pitExitDistance)} m`
+                      : 'Repères stands non définis'}
                   </span>
                   {(currentCircuit.pitEntryDistance !== undefined || currentCircuit.pitExitDistance !== undefined) && (
                     <button
@@ -2094,7 +2315,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Bouton de suppression du circuit & retour aux stands */}
+              {/* BOUTONS NAVIGATION & ACTIONS */}
               <div style={{ marginTop: 'auto', display: 'flex', flexDirection: 'column', gap: '6px' }}>
                 <button
                   onClick={() => setViewRole('stand')}
